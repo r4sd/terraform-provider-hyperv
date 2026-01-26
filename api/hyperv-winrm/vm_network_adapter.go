@@ -48,9 +48,7 @@ if ($vmNetworkAdapter.SwitchName) {
 $SetVmNetworkAdapterArgs = @{}
 $SetVmNetworkAdapterArgs.VmName=$vmNetworkAdapter.VmName
 $SetVmNetworkAdapterArgs.Name=$vmNetworkAdapter.Name
-if ($vmNetworkAdapter.DynamicMacAddress) {
-	$SetVmNetworkAdapterArgs.DynamicMacAddress=$vmNetworkAdapter.DynamicMacAddress
-} elseif ($vmNetworkAdapter.StaticMacAddress) {
+if ($vmNetworkAdapter.StaticMacAddress -and $vmNetworkAdapter.StaticMacAddress -ne '') {
 	$SetVmNetworkAdapterArgs.StaticMacAddress=$vmNetworkAdapter.StaticMacAddress
 }
 $SetVmNetworkAdapterArgs.MacAddressSpoofing=$macAddressSpoofing
@@ -463,9 +461,7 @@ if ($vmNetworkAdaptersObject.Name -ne $vmNetworkAdapter.Name) {
 $SetVmNetworkAdapterArgs = @{}
 $SetVmNetworkAdapterArgs.VmName=$vmNetworkAdapter.VmName
 $SetVmNetworkAdapterArgs.Name=$vmNetworkAdapter.Name
-if ($vmNetworkAdapter.DynamicMacAddress) {
-	$SetVmNetworkAdapterArgs.DynamicMacAddress=$vmNetworkAdapter.DynamicMacAddress
-} elseif ($vmNetworkAdapter.StaticMacAddress) {
+if ($vmNetworkAdapter.StaticMacAddress -and $vmNetworkAdapter.StaticMacAddress -ne '') {
 	$SetVmNetworkAdapterArgs.StaticMacAddress=$vmNetworkAdapter.StaticMacAddress
 }
 

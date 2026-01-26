@@ -205,6 +205,10 @@ jobs:
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
       name: go mod download
       run: go mod download
+    - uses: hashicorp/setup-terraform@v3.0.0
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
 
     - run: go generate ./...
     - name: Check for Git Differences

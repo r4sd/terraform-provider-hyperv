@@ -243,6 +243,13 @@ func resourceHyperVMachineInstance() *schema.Resource {
 				Description:      "Valid values to use are `Running`, `Off`. Specifies if the machine instance will be running or off.",
 			},
 
+			"turn_off_on_destroy": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "If true, the VM will be turned off (hard power off) instead of attempting a graceful shutdown when destroyed. This is useful for VMs that do not respond to Hyper-V shutdown integration services, such as Linux K8s nodes.",
+			},
+
 			"wait_for_state_timeout": {
 				Type:        schema.TypeInt,
 				Optional:    true,
@@ -1058,7 +1065,7 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		}
 	}
 
-	err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, state)
+	err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, state, false)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -1447,7 +1454,7 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		}
 
 		state := api.ToVmState((d.Get("state")).(string))
-		err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, state)
+		err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, state, false)
 		if err != nil {
 			return diag.FromErr(err)
 		}
@@ -1471,7 +1478,8 @@ func resourceHyperVMachineInstanceDelete(ctx context.Context, d *schema.Resource
 	}
 
 	state := api.VmState_Off
-	err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, state)
+	turnOff := d.Get("turn_off_on_destroy").(bool)
+	err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, state, turnOff)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -1500,7 +1508,7 @@ func turnOffVmIfOn(ctx context.Context, data *schema.ResourceData, client api.Cl
 				return err
 			}
 
-			err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, api.VmState_Off)
+			err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, api.VmState_Off, false)
 			if err != nil {
 				return err
 			}

@@ -242,6 +242,18 @@ if ($vhd -and !(Test-Path $vhd.Path)) {
         Expand-Downloads -FolderPath $pathDirectory
 
         Pop-Location
+
+        # ダウンロード/展開されたファイルを$vhd.Pathにリネーム
+        if (!(Test-Path $vhd.Path)) {
+            $targetExtension = [System.IO.Path]::GetExtension($vhd.Path)
+            $vhdFiles = Get-ChildItem -Path $pathDirectory -File | Where-Object {
+                $_.Extension -ieq $targetExtension -and $_.Name -ine $pathFilename
+            }
+            if ($vhdFiles) {
+                $sourceFile = if ($vhdFiles -is [array]) { $vhdFiles[0] } else { $vhdFiles }
+                Rename-Item -Path $sourceFile.FullName -NewName $pathFilename -Force
+            }
+        }
     } else {
         $NewVhdArgs = @{}
         $NewVhdArgs.Path = $vhd.Path

@@ -182,8 +182,12 @@ func resourceHyperVNetworkSwitchCreate(ctx context.Context, d *schema.ResourceDa
 	defaultFlowMinimumBandwidthAbsolute := int64((d.Get("default_flow_minimum_bandwidth_absolute")).(int))
 	defaultFlowMinimumBandwidthWeight := int64((d.Get("default_flow_minimum_bandwidth_weight")).(int))
 	defaultQueueVmmqEnabled := (d.Get("default_queue_vmmq_enabled")).(bool)
-	defaultQueueVmmqQueuePairs := int32((d.Get("default_queue_vmmq_queue_pairs")).(int))
+	conv := api.NewIntConverter()
+	defaultQueueVmmqQueuePairs := conv.Int32((d.Get("default_queue_vmmq_queue_pairs")).(int))
 	defaultQueueVrssEnabled := (d.Get("default_queue_vrss_enabled")).(bool)
+	if conv.Err() != nil {
+		return diag.FromErr(conv.Err())
+	}
 
 	switch switchType {
 	case api.VMSwitchType_Private:
@@ -392,8 +396,12 @@ func resourceHyperVNetworkSwitchUpdate(ctx context.Context, d *schema.ResourceDa
 	defaultFlowMinimumBandwidthAbsolute := int64((d.Get("default_flow_minimum_bandwidth_absolute")).(int))
 	defaultFlowMinimumBandwidthWeight := int64((d.Get("default_flow_minimum_bandwidth_weight")).(int))
 	defaultQueueVmmqEnabled := (d.Get("default_queue_vmmq_enabled")).(bool)
-	defaultQueueVmmqQueuePairs := int32((d.Get("default_queue_vmmq_queue_pairs")).(int))
+	conv := api.NewIntConverter()
+	defaultQueueVmmqQueuePairs := conv.Int32((d.Get("default_queue_vmmq_queue_pairs")).(int))
 	defaultQueueVrssEnabled := (d.Get("default_queue_vrss_enabled")).(bool)
+	if conv.Err() != nil {
+		return diag.FromErr(conv.Err())
+	}
 
 	switch switchType {
 	case api.VMSwitchType_Private:

@@ -60,17 +60,21 @@ func ExpandVmProcessors(d *schema.ResourceData) ([]VmProcessor, error) {
 
 			log.Printf("[DEBUG] processor =  [%+v]", processor)
 
+			conv := NewIntConverter()
 			expandedVmProcessor := VmProcessor{
 				CompatibilityForMigrationEnabled:             processor["compatibility_for_migration_enabled"].(bool),
 				CompatibilityForOlderOperatingSystemsEnabled: processor["compatibility_for_older_operating_systems_enabled"].(bool),
 				HwThreadCountPerCore:                         int64(processor["hw_thread_count_per_core"].(int)),
 				Maximum:                                      int64(processor["maximum"].(int)),
 				Reserve:                                      int64(processor["reserve"].(int)),
-				RelativeWeight:                               int32(processor["relative_weight"].(int)),
-				MaximumCountPerNumaNode:                      int32(processor["maximum_count_per_numa_node"].(int)),
-				MaximumCountPerNumaSocket:                    int32(processor["maximum_count_per_numa_socket"].(int)),
+				RelativeWeight:                               conv.Int32(processor["relative_weight"].(int)),
+				MaximumCountPerNumaNode:                      conv.Int32(processor["maximum_count_per_numa_node"].(int)),
+				MaximumCountPerNumaSocket:                    conv.Int32(processor["maximum_count_per_numa_socket"].(int)),
 				EnableHostResourceProtection:                 processor["enable_host_resource_protection"].(bool),
 				ExposeVirtualizationExtensions:               processor["expose_virtualization_extensions"].(bool),
+			}
+			if conv.Err() != nil {
+				return nil, conv.Err()
 			}
 
 			expandedVmProcessors = append(expandedVmProcessors, expandedVmProcessor)

@@ -334,11 +334,15 @@ type VmNetworkAdapter struct {
 
 func ExpandVmNetworkAdapterWaitForIps(d *schema.ResourceData) ([]VmNetworkAdapterWaitForIp, uint32, uint32, error) {
 	expandVmNetworkAdapterWaitForIps := make([]VmNetworkAdapterWaitForIp, 0)
-	waitForIpsTimeout := uint32((d.Get("wait_for_ips_timeout")).(int))
+	conv := NewIntConverter()
+	waitForIpsTimeout := conv.Uint32((d.Get("wait_for_ips_timeout")).(int))
 	if waitForIpsTimeout == 0 {
 		waitForIpsTimeout = 300
 	}
-	waitForIpsPollPeriod := uint32((d.Get("wait_for_ips_poll_period")).(int))
+	waitForIpsPollPeriod := conv.Uint32((d.Get("wait_for_ips_poll_period")).(int))
+	if conv.Err() != nil {
+		return nil, 0, 0, conv.Err()
+	}
 
 	if v, ok := d.GetOk("network_adaptors"); ok {
 		networkAdapters := v.([]interface{})

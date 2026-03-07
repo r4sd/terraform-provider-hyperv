@@ -73,13 +73,12 @@ type HypervVmDvdDriveClient interface {
 	UpdateVmDvdDrive(
 		ctx context.Context,
 		vmName string,
+		index int,
 		controllerNumber int,
 		controllerLocation int,
-		toControllerNumber int,
-		toControllerLocation int,
 		path string,
 		resourcePoolName string,
 	) (err error)
-	DeleteVmDvdDrive(ctx context.Context, vmName string, controllerNumber int, controllerLocation int) (err error)
+	DeleteVmDvdDrive(ctx context.Context, vmName string, index int) (err error)
 	CreateOrUpdateVmDvdDrives(ctx context.Context, vmName string, dvdDrives []VmDvdDrive) (err error)
 }

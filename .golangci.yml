@@ -4,6 +4,11 @@ issues:
         - gosimple
       text: "S1039:"
 
+    # フォーク元コード・依存パッケージの非推奨API警告を抑制
+    - linters:
+        - staticcheck
+      text: "SA1019:"
+
     - linters:
         - unparam
       text: "always receives"

@@ -4,7 +4,7 @@ issues:
         - gosimple
       text: "S1039:"
 
-    # Exclude issues bypassing staticcheck.conf
+    # フォーク元コード・依存パッケージの非推奨API警告を抑制
     - linters:
         - staticcheck
       text: "SA1019:"

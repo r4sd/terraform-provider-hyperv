@@ -92,10 +92,9 @@ func (c *ClientConfig) GetVmDvdDrives(ctx context.Context, vmName string) (resul
 }
 
 type updateVmDvdDriveArgs struct {
-	VmName             string
-	ControllerNumber   int
-	ControllerLocation int
-	VmDvdDriveJson     string
+	VmName         string
+	Index          int
+	VmDvdDriveJson string
 }
 
 var updateVmDvdDriveTemplate = template.Must(template.New("UpdateVmDvdDrive").Parse(`
@@ -103,10 +102,10 @@ $ErrorActionPreference = 'Stop'
 Import-Module Hyper-V
 $vmDvdDrive = '{{.VmDvdDriveJson}}' | ConvertFrom-Json
 
-$vmDvdDrivesObject = @(Get-VM -Name '{{.VmName}}*' | ?{$_.Name -eq '{{.VmName}}' } | Get-VMDvdDrive -ControllerLocation {{.ControllerLocation}} -ControllerNumber {{.ControllerNumber}} )
+$vmDvdDrivesObject = @(Get-VM -Name '{{.VmName}}*' | ?{$_.Name -eq '{{.VmName}}' } | Get-VMDvdDrive)[{{.Index}}]
 
 if (!$vmDvdDrivesObject){
-	throw "VM dvd drive does not exist - {{.ControllerLocation}} {{.ControllerNumber}}"
+	throw "VM dvd drive does not exist at index {{.Index}}"
 }
 
 $SetVmDvdDriveArgs = @{}
@@ -136,17 +135,16 @@ Set-VMDvdDrive @SetVmDvdDriveArgs
 func (c *ClientConfig) UpdateVmDvdDrive(
 	ctx context.Context,
 	vmName string,
+	index int,
 	controllerNumber int,
 	controllerLocation int,
-	toControllerNumber int,
-	toControllerLocation int,
 	path string,
 	resourcePoolName string,
 ) (err error) {
 	vmDvdDriveJson, err := json.Marshal(api.VmDvdDrive{
 		VmName:             vmName,
-		ControllerNumber:   toControllerNumber,
-		ControllerLocation: toControllerLocation,
+		ControllerNumber:   controllerNumber,
+		ControllerLocation: controllerLocation,
 		Path:               path,
 		ResourcePoolName:   resourcePoolName,
 	})
@@ -156,32 +154,29 @@ func (c *ClientConfig) UpdateVmDvdDrive(
 	}
 
 	err = c.WinRmClient.RunFireAndForgetScript(ctx, updateVmDvdDriveTemplate, updateVmDvdDriveArgs{
-		VmName:             vmName,
-		ControllerNumber:   controllerNumber,
-		ControllerLocation: controllerLocation,
-		VmDvdDriveJson:     string(vmDvdDriveJson),
+		VmName:         vmName,
+		Index:          index,
+		VmDvdDriveJson: string(vmDvdDriveJson),
 	})
 
 	return err
 }
 
 type deleteVmDvdDriveArgs struct {
-	VmName             string
-	ControllerNumber   int
-	ControllerLocation int
+	VmName string
+	Index  int
 }
 
 var deleteVmDvdDriveTemplate = template.Must(template.New("DeleteVmDvdDrive").Parse(`
 $ErrorActionPreference = 'Stop'
 
-@(Get-VM -Name '{{.VmName}}*' | ?{$_.Name -eq '{{.VmName}}' } | Get-VMDvdDrive -ControllerNumber {{.ControllerNumber}} -ControllerLocation {{.ControllerLocation}}) | Remove-VMDvdDrive
+@(Get-VM -Name '{{.VmName}}*' | ?{$_.Name -eq '{{.VmName}}' } | Get-VMDvdDrive)[{{.Index}}] | Remove-VMDvdDrive
 `))
 
-func (c *ClientConfig) DeleteVmDvdDrive(ctx context.Context, vmName string, controllerNumber int, controllerLocation int) (err error) {
+func (c *ClientConfig) DeleteVmDvdDrive(ctx context.Context, vmName string, index int) (err error) {
 	err = c.WinRmClient.RunFireAndForgetScript(ctx, deleteVmDvdDriveTemplate, deleteVmDvdDriveArgs{
-		VmName:             vmName,
-		ControllerNumber:   controllerNumber,
-		ControllerLocation: controllerLocation,
+		VmName: vmName,
+		Index:  index,
 	})
 
 	return err
@@ -196,9 +191,9 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 	currentDvdDrivesLength := len(currentDvdDrives)
 	desiredDvdDrivesLength := len(dvdDrives)
 
+	// 余剰ドライブを末尾から削除（インデックスシフトを回避）
 	for i := currentDvdDrivesLength - 1; i > desiredDvdDrivesLength-1; i-- {
-		currentDvdDrive := currentDvdDrives[i]
-		err = c.DeleteVmDvdDrive(ctx, vmName, currentDvdDrive.ControllerNumber, currentDvdDrive.ControllerLocation)
+		err = c.DeleteVmDvdDrive(ctx, vmName, i)
 		if err != nil {
 			return err
 		}
@@ -208,15 +203,13 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 		currentDvdDrivesLength = desiredDvdDrivesLength
 	}
 
-	for i := 0; i <= currentDvdDrivesLength-1; i++ {
-		currentDvdDrive := currentDvdDrives[i]
+	// インデックスベースで既存ドライブを更新
+	for i := 0; i < currentDvdDrivesLength; i++ {
 		dvdDrive := dvdDrives[i]
-
 		err = c.UpdateVmDvdDrive(
 			ctx,
 			vmName,
-			currentDvdDrive.ControllerNumber,
-			currentDvdDrive.ControllerLocation,
+			i,
 			dvdDrive.ControllerNumber,
 			dvdDrive.ControllerLocation,
 			dvdDrive.Path,
@@ -227,7 +220,8 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 		}
 	}
 
-	for i := currentDvdDrivesLength - 1 + 1; i <= desiredDvdDrivesLength-1; i++ {
+	// 新規ドライブを作成
+	for i := currentDvdDrivesLength; i < desiredDvdDrivesLength; i++ {
 		dvdDrive := dvdDrives[i]
 		err = c.CreateVmDvdDrive(
 			ctx,
@@ -237,7 +231,6 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 			dvdDrive.Path,
 			dvdDrive.ResourcePoolName,
 		)
-
 		if err != nil {
 			return err
 		}

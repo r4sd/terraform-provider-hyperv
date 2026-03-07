@@ -157,18 +157,22 @@ func ExpandHardDiskDrives(d *schema.ResourceData) ([]VmHardDiskDrive, error) {
 				return nil, fmt.Errorf("[ERROR][hyperv] hard_disk_drives should be a Hash - was '%+v'", hardDiskDrive)
 			}
 
+			conv := NewIntConverter()
 			expandedHardDiskDrive := VmHardDiskDrive{
 				ControllerType:                ToControllerType(hardDiskDrive["controller_type"].(string)),
-				ControllerNumber:              int32(hardDiskDrive["controller_number"].(int)),
-				ControllerLocation:            int32(hardDiskDrive["controller_location"].(int)),
+				ControllerNumber:              conv.Int32(hardDiskDrive["controller_number"].(int)),
+				ControllerLocation:            conv.Int32(hardDiskDrive["controller_location"].(int)),
 				Path:                          hardDiskDrive["path"].(string),
-				DiskNumber:                    uint32(hardDiskDrive["disk_number"].(int)),
+				DiskNumber:                    conv.Uint32(hardDiskDrive["disk_number"].(int)),
 				ResourcePoolName:              hardDiskDrive["resource_pool_name"].(string),
 				SupportPersistentReservations: hardDiskDrive["support_persistent_reservations"].(bool),
-				MaximumIops:                   uint64(hardDiskDrive["maximum_iops"].(int)),
-				MinimumIops:                   uint64(hardDiskDrive["minimum_iops"].(int)),
+				MaximumIops:                   conv.Uint64(hardDiskDrive["maximum_iops"].(int)),
+				MinimumIops:                   conv.Uint64(hardDiskDrive["minimum_iops"].(int)),
 				QosPolicyId:                   hardDiskDrive["qos_policy_id"].(string),
 				OverrideCacheAttributes:       ToCacheAttributes(hardDiskDrive["override_cache_attributes"].(string)),
+			}
+			if conv.Err() != nil {
+				return nil, conv.Err()
 			}
 
 			expandedHardDiskDrives = append(expandedHardDiskDrives, expandedHardDiskDrive)

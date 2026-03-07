@@ -147,8 +147,12 @@ type VmStatus struct {
 }
 
 func ExpandVmStateWaitForState(d *schema.ResourceData) (uint32, uint32, error) {
-	waitForIpsTimeout := uint32((d.Get("wait_for_state_timeout")).(int))
-	waitForIpsPollPeriod := uint32((d.Get("wait_for_state_poll_period")).(int))
+	conv := NewIntConverter()
+	waitForIpsTimeout := conv.Uint32((d.Get("wait_for_state_timeout")).(int))
+	waitForIpsPollPeriod := conv.Uint32((d.Get("wait_for_state_poll_period")).(int))
+	if conv.Err() != nil {
+		return 0, 0, conv.Err()
+	}
 
 	return waitForIpsTimeout, waitForIpsPollPeriod, nil
 }

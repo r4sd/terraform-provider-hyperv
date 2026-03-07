@@ -221,10 +221,14 @@ func resourceHyperVVhdCreate(ctx context.Context, d *schema.ResourceData, meta i
 	sourceDisk := (d.Get("source_disk")).(int)
 	vhdType := api.ToVhdType((d.Get("vhd_type")).(string))
 	parentPath := (d.Get("parent_path")).(string)
-	size := uint64((d.Get("size")).(int))
-	blockSize := uint32((d.Get("block_size")).(int))
-	logicalSectorSize := uint32((d.Get("logical_sector_size")).(int))
-	physicalSectorSize := uint32((d.Get("physical_sector_size")).(int))
+	conv := api.NewIntConverter()
+	size := conv.Uint64((d.Get("size")).(int))
+	blockSize := conv.Uint32((d.Get("block_size")).(int))
+	logicalSectorSize := conv.Uint32((d.Get("logical_sector_size")).(int))
+	physicalSectorSize := conv.Uint32((d.Get("physical_sector_size")).(int))
+	if conv.Err() != nil {
+		return diag.FromErr(conv.Err())
+	}
 
 	err := c.CreateOrUpdateVhd(ctx, path, source, sourceVm, sourceDisk, vhdType, parentPath, size, blockSize, logicalSectorSize, physicalSectorSize)
 
@@ -318,10 +322,14 @@ func resourceHyperVVhdUpdate(ctx context.Context, d *schema.ResourceData, meta i
 	sourceDisk := (d.Get("source_disk")).(int)
 	vhdType := api.ToVhdType((d.Get("vhd_type")).(string))
 	parentPath := (d.Get("parent_path")).(string)
-	size := uint64((d.Get("size")).(int))
-	blockSize := uint32((d.Get("block_size")).(int))
-	logicalSectorSize := uint32((d.Get("logical_sector_size")).(int))
-	physicalSectorSize := uint32((d.Get("physical_sector_size")).(int))
+	conv := api.NewIntConverter()
+	size := conv.Uint64((d.Get("size")).(int))
+	blockSize := conv.Uint32((d.Get("block_size")).(int))
+	logicalSectorSize := conv.Uint32((d.Get("logical_sector_size")).(int))
+	physicalSectorSize := conv.Uint32((d.Get("physical_sector_size")).(int))
+	if conv.Err() != nil {
+		return diag.FromErr(conv.Err())
+	}
 
 	exists := (d.Get("exists")).(bool)
 

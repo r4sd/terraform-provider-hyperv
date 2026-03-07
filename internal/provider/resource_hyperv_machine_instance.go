@@ -954,17 +954,18 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 
 	path := (d.Get("path")).(string)
 	generation := (d.Get("generation")).(int)
+	conv := api.NewIntConverter()
 	automaticCriticalErrorAction := api.ToCriticalErrorAction((d.Get("automatic_critical_error_action")).(string))
-	automaticCriticalErrorActionTimeout := int32((d.Get("automatic_critical_error_action_timeout")).(int))
+	automaticCriticalErrorActionTimeout := conv.Int32((d.Get("automatic_critical_error_action_timeout")).(int))
 	automaticStartAction := api.ToStartAction((d.Get("automatic_start_action")).(string))
-	automaticStartDelay := int32((d.Get("automatic_start_delay")).(int))
+	automaticStartDelay := conv.Int32((d.Get("automatic_start_delay")).(int))
 	automaticStopAction := api.ToStopAction((d.Get("automatic_stop_action")).(string))
 	checkpointType := api.ToCheckpointType((d.Get("checkpoint_type")).(string))
 	dynamicMemory := (d.Get("dynamic_memory")).(bool)
 	guestControlledCacheTypes := (d.Get("guest_controlled_cache_types")).(bool)
-	highMemoryMappedIoSpace := uint64((d.Get("high_memory_mapped_io_space")).(int))
+	highMemoryMappedIoSpace := conv.Uint64((d.Get("high_memory_mapped_io_space")).(int))
 	lockOnDisconnect := api.ToOnOffState((d.Get("lock_on_disconnect")).(string))
-	lowMemoryMappedIoSpace := uint32((d.Get("low_memory_mapped_io_space")).(int))
+	lowMemoryMappedIoSpace := conv.Uint32((d.Get("low_memory_mapped_io_space")).(int))
 	memoryMaximumBytes := int64((d.Get("memory_maximum_bytes")).(int))
 	memoryMinimumBytes := int64((d.Get("memory_minimum_bytes")).(int))
 	memoryStartupBytes := int64((d.Get("memory_startup_bytes")).(int))
@@ -974,6 +975,9 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 	snapshotFileLocation := (d.Get("snapshot_file_location")).(string)
 	staticMemory := (d.Get("static_memory")).(bool)
 	state := api.ToVmState((d.Get("state")).(string))
+	if conv.Err() != nil {
+		return diag.FromErr(conv.Err())
+	}
 
 	if dynamicMemory && staticMemory {
 		return diag.Errorf("[ERROR][hyperv][create] Dynamic and static can't be both selected at the same time")
@@ -1332,17 +1336,18 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		d.HasChange("smart_paging_file_path") ||
 		d.HasChange("snapshot_file_location") ||
 		d.HasChange("static_memory") {
+		conv := api.NewIntConverter()
 		automaticCriticalErrorAction := api.ToCriticalErrorAction((d.Get("automatic_critical_error_action")).(string))
-		automaticCriticalErrorActionTimeout := int32((d.Get("automatic_critical_error_action_timeout")).(int))
+		automaticCriticalErrorActionTimeout := conv.Int32((d.Get("automatic_critical_error_action_timeout")).(int))
 		automaticStartAction := api.ToStartAction((d.Get("automatic_start_action")).(string))
-		automaticStartDelay := int32((d.Get("automatic_start_delay")).(int))
+		automaticStartDelay := conv.Int32((d.Get("automatic_start_delay")).(int))
 		automaticStopAction := api.ToStopAction((d.Get("automatic_stop_action")).(string))
 		checkpointType := api.ToCheckpointType((d.Get("checkpoint_type")).(string))
 		dynamicMemory := (d.Get("dynamic_memory")).(bool)
 		guestControlledCacheTypes := (d.Get("guest_controlled_cache_types")).(bool)
-		highMemoryMappedIoSpace := uint64((d.Get("high_memory_mapped_io_space")).(int))
+		highMemoryMappedIoSpace := conv.Uint64((d.Get("high_memory_mapped_io_space")).(int))
 		lockOnDisconnect := api.ToOnOffState((d.Get("lock_on_disconnect")).(string))
-		lowMemoryMappedIoSpace := uint32((d.Get("low_memory_mapped_io_space")).(int))
+		lowMemoryMappedIoSpace := conv.Uint32((d.Get("low_memory_mapped_io_space")).(int))
 		memoryMaximumBytes := int64((d.Get("memory_maximum_bytes")).(int))
 		memoryMinimumBytes := int64((d.Get("memory_minimum_bytes")).(int))
 		memoryStartupBytes := int64((d.Get("memory_startup_bytes")).(int))
@@ -1351,6 +1356,9 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		smartPagingFilePath := (d.Get("smart_paging_file_path")).(string)
 		snapshotFileLocation := (d.Get("snapshot_file_location")).(string)
 		staticMemory := (d.Get("static_memory")).(bool)
+		if conv.Err() != nil {
+			return diag.FromErr(conv.Err())
+		}
 
 		if dynamicMemory && staticMemory {
 			return diag.Errorf("[ERROR][hyperv][update] Dynamic and static memory can't be both selected at the same time i.e. static_memory=true and dynamic_memory=false")

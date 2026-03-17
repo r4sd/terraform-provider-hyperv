@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       continue-on-error: true
       id: cache-go-pkg-mod
       timeout-minutes: 3
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       continue-on-error: true
       id: cache-go-pkg-mod
       timeout-minutes: 3
@@ -88,7 +88,7 @@ jobs:
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-pkg-mod
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       continue-on-error: true
       id: cache-go-build
       timeout-minutes: 3
@@ -174,7 +174,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       continue-on-error: true
       id: cache-go-pkg-mod
       timeout-minutes: 3
@@ -186,7 +186,7 @@ jobs:
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-pkg-mod
-    - uses: actions/cache@v4
+    - uses: actions/cache@v5
       continue-on-error: true
       id: cache-go-build
       timeout-minutes: 3
@@ -199,7 +199,7 @@ jobs:
           ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
           ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-build
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v6
       with:
         go-version: ${{ env.GO_VERSION }}
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -222,7 +222,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         continue-on-error: true
         id: cache-go-pkg-mod
         timeout-minutes: 3
@@ -234,7 +234,7 @@ jobs:
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-pkg-mod
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         continue-on-error: true
         id: cache-go-build
         timeout-minutes: 3
@@ -247,7 +247,7 @@ jobs:
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-build
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -261,7 +261,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         continue-on-error: true
         id: cache-go-pkg-mod
         timeout-minutes: 3
@@ -273,7 +273,7 @@ jobs:
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-pkg-mod
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         continue-on-error: true
         id: cache-go-build
         timeout-minutes: 3
@@ -286,7 +286,7 @@ jobs:
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-build
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -324,7 +324,7 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.CREATE_TAG_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         continue-on-error: true
         id: cache-go-pkg-mod
         timeout-minutes: 3
@@ -336,7 +336,7 @@ jobs:
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-pkg-mod
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         continue-on-error: true
         id: cache-go-build
         timeout-minutes: 3
@@ -349,7 +349,7 @@ jobs:
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-build
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ env.GO_VERSION }}
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'

@@ -45,3 +45,4 @@ website/vendor
 /.vs
 /.idea
 /.terraform
+.worktrees/

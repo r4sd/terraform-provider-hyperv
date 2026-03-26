@@ -112,6 +112,8 @@ if ($vm.StaticMemory) {
 
 Set-Vm @SetVmArgs
 
+Set-Vm -Name $vm.Name -AutomaticCheckpointsEnabled $vm.AutomaticCheckpointsEnabled
+
 `))
 
 func (c *ClientConfig) CreateVm(
@@ -138,6 +140,7 @@ func (c *ClientConfig) CreateVm(
 	smartPagingFilePath string,
 	snapshotFileLocation string,
 	staticMemory bool,
+	automaticCheckpointsEnabled bool,
 ) (err error) {
 	vmJson, err := json.Marshal(api.Vm{
 		Name:                                name,
@@ -162,6 +165,7 @@ func (c *ClientConfig) CreateVm(
 		SmartPagingFilePath:                 smartPagingFilePath,
 		SnapshotFileLocation:                snapshotFileLocation,
 		StaticMemory:                        staticMemory,
+		AutomaticCheckpointsEnabled:         automaticCheckpointsEnabled,
 	})
 
 	if err != nil {
@@ -204,6 +208,7 @@ $vmObject = Get-VM -Name '{{.Name}}*' -ErrorAction SilentlyContinue | ?{$_.Name 
 	SmartPagingFilePath=$_.SmartPagingFilePath;
 	SnapshotFileLocation=$_.SnapshotFileLocation;
 	StaticMemory=!$_.DynamicMemoryEnabled;
+	AutomaticCheckpointsEnabled=$_.AutomaticCheckpointsEnabled;
 }}
 
 if ($vmObject) {
@@ -280,6 +285,8 @@ if ($vm.StaticMemory) {
 }
 
 Set-Vm @SetVmArgs
+
+Set-Vm -Name $vm.Name -AutomaticCheckpointsEnabled $vm.AutomaticCheckpointsEnabled
 `))
 
 func (c *ClientConfig) UpdateVm(
@@ -305,6 +312,7 @@ func (c *ClientConfig) UpdateVm(
 	smartPagingFilePath string,
 	snapshotFileLocation string,
 	staticMemory bool,
+	automaticCheckpointsEnabled bool,
 ) (err error) {
 	vmJson, err := json.Marshal(api.Vm{
 		Name: name,
@@ -328,6 +336,7 @@ func (c *ClientConfig) UpdateVm(
 		SmartPagingFilePath:                 smartPagingFilePath,
 		SnapshotFileLocation:                snapshotFileLocation,
 		StaticMemory:                        staticMemory,
+		AutomaticCheckpointsEnabled:         automaticCheckpointsEnabled,
 	})
 
 	if err != nil {

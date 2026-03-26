@@ -126,7 +126,7 @@ $vmFirmwareObject = Get-VM -Name '{{.VmName}}*' | ?{$_.Name -eq '{{.VmName}}' } 
 		if ($_.BootType -eq 'Network') {
 			@{Type='NetworkAdapter';NetworkAdapterName=$_.Device.Name;SwitchName=$_.Device.SwitchName;MacAddress=$_.Device.MacAddress;Path='';ControllerNumber=-1;ControllerLocation=-1;}
 		} elseif ($_.BootType -eq 'Drive') {
-			@{Type=@(if ($_.Device.Name.StartsWith('Hard Drive')) { 'HardDiskDrive' } else {'DvdDrive'});NetworkAdapterName='';SwitchName='';MacAddress='';Path=$_.Device.Path;ControllerNumber=$_.Device.ControllerNumber;ControllerLocation=$_.Device.ControllerLocation;}
+			@{Type=@(if ($_.Device -is [Microsoft.HyperV.PowerShell.HardDiskDrive]) { 'HardDiskDrive' } else {'DvdDrive'});NetworkAdapterName='';SwitchName='';MacAddress='';Path=$_.Device.Path;ControllerNumber=$_.Device.ControllerNumber;ControllerLocation=$_.Device.ControllerLocation;}
 		}
 	})
 	EnableSecureBoot=             $_.SecureBoot

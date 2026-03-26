@@ -36,6 +36,7 @@ func resourceHyperVMachineInstance() *schema.Resource {
 		ReadContext:   resourceHyperVMachineInstanceRead,
 		UpdateContext: resourceHyperVMachineInstanceUpdate,
 		DeleteContext: resourceHyperVMachineInstanceDelete,
+		CustomizeDiff: resourceHyperVMachineInstanceCustomizeDiff,
 		Importer: &schema.ResourceImporter{
 			StateContext: schema.ImportStatePassthroughContext,
 		},
@@ -130,6 +131,13 @@ func resourceHyperVMachineInstance() *schema.Resource {
 				Default:          api.CheckpointType_name[api.CheckpointType_Production],
 				ValidateDiagFunc: StringKeyInMap(api.CheckpointType_value, true),
 				Description:      "Allows you to configure the type of checkpoints created by Hyper-V. If `Disabled` is specified, block creation of checkpoints. If `Standard` is specified, create standard checkpoints. If `Production` is specified, create production checkpoints if supported by guest operating system. Otherwise, create standard checkpoints. If `ProductionOnly` is specified, create production checkpoints if supported by guest operating system. Otherwise, the operation fails. Valid values to use are `Disabled`, `Standard`, `Production`, `ProductionOnly`.",
+			},
+
+			"automatic_checkpoints_enabled": {
+				Type:        schema.TypeBool,
+				Optional:    true,
+				Default:     false,
+				Description: "Specifies whether automatic checkpoints are enabled for the virtual machine.",
 			},
 
 			"dynamic_memory": {
@@ -974,6 +982,7 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 	smartPagingFilePath := (d.Get("smart_paging_file_path")).(string)
 	snapshotFileLocation := (d.Get("snapshot_file_location")).(string)
 	staticMemory := (d.Get("static_memory")).(bool)
+	automaticCheckpointsEnabled := (d.Get("automatic_checkpoints_enabled")).(bool)
 	state := api.ToVmState((d.Get("state")).(string))
 	if conv.Err() != nil {
 		return diag.FromErr(conv.Err())
@@ -1025,7 +1034,7 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		return diag.FromErr(err)
 	}
 
-	err = client.CreateVm(ctx, name, path, generation, automaticCriticalErrorAction, automaticCriticalErrorActionTimeout, automaticStartAction, automaticStartDelay, automaticStopAction, checkpointType, dynamicMemory, guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace, memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes, notes, processorCount, smartPagingFilePath, snapshotFileLocation, staticMemory)
+	err = client.CreateVm(ctx, name, path, generation, automaticCriticalErrorAction, automaticCriticalErrorActionTimeout, automaticStartAction, automaticStartDelay, automaticStopAction, checkpointType, dynamicMemory, guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace, memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes, notes, processorCount, smartPagingFilePath, snapshotFileLocation, staticMemory, automaticCheckpointsEnabled)
 	if err != nil {
 		return diag.FromErr(err)
 	}
@@ -1228,6 +1237,9 @@ func resourceHyperVMachineInstanceRead(ctx context.Context, d *schema.ResourceDa
 	if err := d.Set("checkpoint_type", vm.CheckpointType.String()); err != nil {
 		return diag.FromErr(err)
 	}
+	if err := d.Set("automatic_checkpoints_enabled", vm.AutomaticCheckpointsEnabled); err != nil {
+		return diag.FromErr(err)
+	}
 	if err := d.Set("dynamic_memory", vm.DynamicMemory); err != nil {
 		return diag.FromErr(err)
 	}
@@ -1290,6 +1302,7 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		d.HasChange("automatic_start_delay") ||
 		d.HasChange("automatic_stop_action") ||
 		d.HasChange("checkpoint_type") ||
+		d.HasChange("automatic_checkpoints_enabled") ||
 		d.HasChange("dynamic_memory") ||
 		d.HasChange("guest_controlled_cache_types") ||
 		d.HasChange("high_memory_mapped_io_space") ||
@@ -1323,6 +1336,7 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		d.HasChange("automatic_start_delay") ||
 		d.HasChange("automatic_stop_action") ||
 		d.HasChange("checkpoint_type") ||
+		d.HasChange("automatic_checkpoints_enabled") ||
 		d.HasChange("dynamic_memory") ||
 		d.HasChange("guest_controlled_cache_types") ||
 		d.HasChange("high_memory_mapped_io_space") ||
@@ -1356,6 +1370,7 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		smartPagingFilePath := (d.Get("smart_paging_file_path")).(string)
 		snapshotFileLocation := (d.Get("snapshot_file_location")).(string)
 		staticMemory := (d.Get("static_memory")).(bool)
+		automaticCheckpointsEnabled := (d.Get("automatic_checkpoints_enabled")).(bool)
 		if conv.Err() != nil {
 			return diag.FromErr(conv.Err())
 		}
@@ -1368,7 +1383,7 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 			return diag.Errorf("[ERROR][hyperv][update] Either dynamic or static memory must be selected i.e. static_memory=true and dynamic_memory=false")
 		}
 
-		err := client.UpdateVm(ctx, name, automaticCriticalErrorAction, automaticCriticalErrorActionTimeout, automaticStartAction, automaticStartDelay, automaticStopAction, checkpointType, dynamicMemory, guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace, memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes, notes, processorCount, smartPagingFilePath, snapshotFileLocation, staticMemory)
+		err := client.UpdateVm(ctx, name, automaticCriticalErrorAction, automaticCriticalErrorActionTimeout, automaticStartAction, automaticStartDelay, automaticStopAction, checkpointType, dynamicMemory, guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace, memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes, notes, processorCount, smartPagingFilePath, snapshotFileLocation, staticMemory, automaticCheckpointsEnabled)
 		if err != nil {
 			return diag.FromErr(err)
 		}
@@ -1537,5 +1552,24 @@ func turnOffVmIfOn(ctx context.Context, data *schema.ResourceData, client api.Cl
 			return err
 		}
 	}
+	return nil
+}
+
+func resourceHyperVMachineInstanceCustomizeDiff(ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {
+	generation := d.Get("generation").(int)
+
+	if generation > 1 {
+		if v, ok := d.GetOk("hard_disk_drives"); ok {
+			hardDiskDrives := v.([]interface{})
+			for i, raw := range hardDiskDrives {
+				drive := raw.(map[string]interface{})
+				controllerType := drive["controller_type"].(string)
+				if strings.EqualFold(controllerType, "Ide") {
+					return fmt.Errorf("hard_disk_drives[%d]: IDE controller is not supported on Generation 2 VMs. Please change controller_type to \"Scsi\"", i)
+				}
+			}
+		}
+	}
+
 	return nil
 }

@@ -213,6 +213,7 @@ resource "hyperv_machine_instance" "default" {
 - `dvd_drives` (Block List) (see [below for nested schema](#nestedblock--dvd_drives))
 - `dynamic_memory` (Boolean) Specifies if machine instance will have dynamic memory enabled.
 - `generation` (Number) Specifies the generation, as an integer, for the virtual machine. Valid values to use are `1`, `2`.
+- `gpu_adapters` (Block List) GPU partition adapters for GPU-P (GPU Partitioning) support. (see [below for nested schema](#nestedblock--gpu_adapters))
 - `guest_controlled_cache_types` (Boolean) Specifies if the machine instance will use guest controlled cache types.
 - `hard_disk_drives` (Block List) (see [below for nested schema](#nestedblock--hard_disk_drives))
 - `high_memory_mapped_io_space` (Number)
@@ -254,6 +255,25 @@ Optional:
 
 - `path` (String) Specifies the full path to the virtual hard disk file or physical hard disk volume for the added DVD drive.
 - `resource_pool_name` (String) Specifies the friendly name of the ISO resource pool to which this DVD drive is to be associated.
+
+
+<a id="nestedblock--gpu_adapters"></a>
+### Nested Schema for `gpu_adapters`
+
+Optional:
+
+- `max_partition_compute` (Number) Maximum compute engine partition size.
+- `max_partition_decode` (Number) Maximum decode engine partition size.
+- `max_partition_encode` (Number) Maximum encode engine partition size.
+- `max_partition_vram` (Number) Maximum VRAM partition size.
+- `min_partition_compute` (Number) Minimum compute engine partition size.
+- `min_partition_decode` (Number) Minimum decode engine partition size.
+- `min_partition_encode` (Number) Minimum encode engine partition size.
+- `min_partition_vram` (Number) Minimum VRAM partition size.
+- `optimal_partition_compute` (Number) Optimal compute engine partition size.
+- `optimal_partition_decode` (Number) Optimal decode engine partition size.
+- `optimal_partition_encode` (Number) Optimal encode engine partition size.
+- `optimal_partition_vram` (Number) Optimal VRAM partition size.
 
 
 <a id="nestedblock--hard_disk_drives"></a>

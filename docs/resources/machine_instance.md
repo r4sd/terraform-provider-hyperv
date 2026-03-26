@@ -203,6 +203,7 @@ resource "hyperv_machine_instance" "default" {
 
 ### Optional
 
+- `automatic_checkpoints_enabled` (Boolean) Specifies whether automatic checkpoints are enabled for the virtual machine.
 - `automatic_critical_error_action` (String) Specifies the action to take when the VM encounters a critical error, and exceeds the timeout duration specified by the AutomaticCriticalErrorActionTimeout cmdlet. Valid values to use are `Pause`, `None`.
 - `automatic_critical_error_action_timeout` (Number) Specifies the amount of time, in minutes, to wait in critical pause before powering off the virtual machine.
 - `automatic_start_action` (String) Specifies the action the virtual machine is to take upon start. Valid values to use are `Nothing`, `StartIfRunning`, `Start`.

@@ -1565,7 +1565,7 @@ func resourceHyperVMachineInstanceCustomizeDiff(ctx context.Context, d *schema.R
 				drive := raw.(map[string]interface{})
 				controllerType := drive["controller_type"].(string)
 				if strings.EqualFold(controllerType, "Ide") {
-					return fmt.Errorf("hard_disk_drives[%d]: Gen 2 VM では IDE コントローラは使用できません。controller_type を \"Scsi\" に変更してください", i)
+					return fmt.Errorf("hard_disk_drives[%d]: IDE controller is not supported on Generation 2 VMs. Please change controller_type to \"Scsi\"", i)
 				}
 			}
 		}

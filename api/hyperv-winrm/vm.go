@@ -2,6 +2,7 @@ package hyperv_winrm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"text/template"
 
@@ -40,7 +41,7 @@ type createVmArgs struct {
 var createVmTemplate = template.Must(template.New("CreateVm").Parse(`
 $ErrorActionPreference = 'Stop'
 Import-Module Hyper-V
-$vm = '{{.VmJson}}' | ConvertFrom-Json
+$vm = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{.VmJson}}')) | ConvertFrom-Json
 $automaticCriticalErrorAction = [Microsoft.HyperV.PowerShell.CriticalErrorAction]$vm.AutomaticCriticalErrorAction
 $automaticStartAction = [Microsoft.HyperV.PowerShell.StartAction]$vm.AutomaticStartAction
 $automaticStopAction = [Microsoft.HyperV.PowerShell.StopAction]$vm.AutomaticStopAction
@@ -173,7 +174,7 @@ func (c *ClientConfig) CreateVm(
 	}
 
 	err = c.WinRmClient.RunFireAndForgetScript(ctx, createVmTemplate, createVmArgs{
-		VmJson: string(vmJson),
+		VmJson: base64.StdEncoding.EncodeToString(vmJson),
 	})
 
 	return err
@@ -234,7 +235,7 @@ type updateVmArgs struct {
 var updateVmTemplate = template.Must(template.New("UpdateVm").Parse(`
 $ErrorActionPreference = 'Stop'
 Import-Module Hyper-V
-$vm = '{{.VmJson}}' | ConvertFrom-Json
+$vm = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{{.VmJson}}')) | ConvertFrom-Json
 $automaticCriticalErrorAction = [Microsoft.HyperV.PowerShell.CriticalErrorAction]$vm.AutomaticCriticalErrorAction
 $automaticStartAction = [Microsoft.HyperV.PowerShell.StartAction]$vm.AutomaticStartAction
 $automaticStopAction = [Microsoft.HyperV.PowerShell.StopAction]$vm.AutomaticStopAction
@@ -344,7 +345,7 @@ func (c *ClientConfig) UpdateVm(
 	}
 
 	err = c.WinRmClient.RunFireAndForgetScript(ctx, updateVmTemplate, updateVmArgs{
-		VmJson: string(vmJson),
+		VmJson: base64.StdEncoding.EncodeToString(vmJson),
 	})
 
 	return err

@@ -196,6 +196,7 @@ func New(version string, commit string) func() *schema.Provider {
 				"hyperv_vhd":              resourceHyperVVhd(),
 				"hyperv_iso_image":        resourceHyperVIsoImage(),
 				"hyperv_cloudinit_iso":    resourceHyperVCloudInitIso(),
+				"hyperv_vm_checkpoint":    resourceHyperVVmCheckpoint(),
 			},
 			DataSourcesMap: map[string]*schema.Resource{
 				"hyperv_network_switch":   dataSourceHyperVNetworkSwitch(),

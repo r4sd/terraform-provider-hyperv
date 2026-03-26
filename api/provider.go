@@ -12,6 +12,7 @@ type Client interface {
 	HypervVmStatusClient
 	HypervVmSwitchClient
 	HypervIsoImageClient
+	HypervCloudInitIsoClient
 	HypervVmGpuAdapterClient
 	HypervVmCheckpointClient
 }

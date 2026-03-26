@@ -12,6 +12,7 @@ type Client interface {
 	HypervVmStatusClient
 	HypervVmSwitchClient
 	HypervIsoImageClient
+	HypervVmCheckpointClient
 }
 
 type Provider struct {

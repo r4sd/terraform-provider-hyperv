@@ -309,6 +309,7 @@ type Vm struct {
 	SmartPagingFilePath                 string
 	SnapshotFileLocation                string
 	StaticMemory                        bool
+	AutomaticCheckpointsEnabled         bool
 	// ParentCheckpointName				string  this will allow us to set the checkpoint to use
 }
 
@@ -338,6 +339,7 @@ type HypervVmClient interface {
 		smartPagingFilePath string,
 		snapshotFileLocation string,
 		staticMemory bool,
+		automaticCheckpointsEnabled bool,
 	) (err error)
 
 	GetVm(ctx context.Context, name string) (result Vm, err error)
@@ -366,6 +368,7 @@ type HypervVmClient interface {
 		smartPagingFilePath string,
 		snapshotFileLocation string,
 		staticMemory bool,
+		automaticCheckpointsEnabled bool,
 	) (err error)
 
 	DeleteVm(ctx context.Context, name string) (err error)

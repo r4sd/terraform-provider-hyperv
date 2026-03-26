@@ -112,10 +112,24 @@ Enter-PSSession -ComputerName $hostName -Port 5986 -Credential $cred -SessionOpt
 ## Provider 設定例
 
 ```hcl
+variable "hyperv_user" {
+  type    = string
+  default = "terraform"
+}
+
+variable "hyperv_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "hyperv_host" {
+  type = string
+}
+
 provider "hyperv" {
-  user     = "terraform"
+  user     = var.hyperv_user
   password = var.hyperv_password
-  host     = "10.0.0.100"
+  host     = var.hyperv_host
   port     = 5986
   https    = true
   insecure = true

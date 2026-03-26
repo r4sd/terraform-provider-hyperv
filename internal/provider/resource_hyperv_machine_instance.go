@@ -243,6 +243,88 @@ func resourceHyperVMachineInstance() *schema.Resource {
 				Description:      "",
 			},
 
+			"gpu_adapters": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				Description: "GPU partition adapters for GPU-P (GPU Partitioning) support.",
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"min_partition_vram": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Minimum VRAM partition size.",
+						},
+						"max_partition_vram": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Maximum VRAM partition size.",
+						},
+						"optimal_partition_vram": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Optimal VRAM partition size.",
+						},
+						"min_partition_encode": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Minimum encode engine partition size.",
+						},
+						"max_partition_encode": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Maximum encode engine partition size.",
+						},
+						"optimal_partition_encode": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Optimal encode engine partition size.",
+						},
+						"min_partition_decode": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Minimum decode engine partition size.",
+						},
+						"max_partition_decode": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Maximum decode engine partition size.",
+						},
+						"optimal_partition_decode": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Optimal decode engine partition size.",
+						},
+						"min_partition_compute": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Minimum compute engine partition size.",
+						},
+						"max_partition_compute": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Maximum compute engine partition size.",
+						},
+						"optimal_partition_compute": {
+							Type:        schema.TypeInt,
+							Optional:    true,
+							Default:     0,
+							Description: "Optimal compute engine partition size.",
+						},
+					},
+				},
+			},
+
 			"state": {
 				Type:             schema.TypeString,
 				Optional:         true,
@@ -1021,6 +1103,11 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		return diag.FromErr(err)
 	}
 
+	gpuAdapters, err := api.ExpandGpuAdapters(d)
+	if err != nil {
+		return diag.FromErr(err)
+	}
+
 	var vmFirmwares []api.VmFirmware
 	if generation > 1 {
 		vmFirmwares, err = api.ExpandVmFirmwares(d)
@@ -1062,6 +1149,11 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 	err = client.CreateOrUpdateVmHardDiskDrives(ctx, name, hardDiskDrives)
 	if err != nil {
 		return diag.FromErr(err)
+	}
+
+	err = client.CreateOrUpdateVmGpuAdapters(ctx, name, gpuAdapters)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf("error creating gpu adapters for vm: %s - %+v", name, err))
 	}
 
 	if generation > 1 {
@@ -1120,6 +1212,11 @@ func resourceHyperVMachineInstanceRead(ctx context.Context, d *schema.ResourceDa
 	hardDiskDrives, err := client.GetVmHardDiskDrives(ctx, name)
 	if err != nil {
 		return diag.FromErr(err)
+	}
+
+	gpuAdapters, err := client.GetVmGpuAdapters(ctx, name)
+	if err != nil {
+		return diag.FromErr(fmt.Errorf("error reading gpu adapters for vm: %s - %+v", name, err))
 	}
 
 	vmFirmwares := client.GetNoVmFirmwares(ctx)
@@ -1190,6 +1287,13 @@ func resourceHyperVMachineInstanceRead(ctx context.Context, d *schema.ResourceDa
 	}
 	log.Printf("[INFO][hyperv][read] hardDiskDrives: %v", hardDiskDrives)
 	log.Printf("[INFO][hyperv][read] flattenedHardDiskDrives: %v", flattenedHardDiskDrives)
+
+	flattenedGpuAdapters := api.FlattenGpuAdapters(&gpuAdapters)
+	if err := d.Set("gpu_adapters", flattenedGpuAdapters); err != nil {
+		return diag.Errorf("[DEBUG] Error setting gpu_adapters error: %v", err)
+	}
+	log.Printf("[INFO][hyperv][read] gpuAdapters: %v", gpuAdapters)
+	log.Printf("[INFO][hyperv][read] flattenedGpuAdapters: %v", flattenedGpuAdapters)
 
 	flattenedNetworkAdapters := api.FlattenNetworkAdapters(&networkAdapters)
 	if err := d.Set("network_adaptors", flattenedNetworkAdapters); err != nil {
@@ -1321,7 +1425,8 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		d.HasChange("integration_services") ||
 		d.HasChange("network_adaptors") ||
 		d.HasChange("dvd_drives") ||
-		d.HasChange("hard_disk_drives")
+		d.HasChange("hard_disk_drives") ||
+		d.HasChange("gpu_adapters")
 
 	if hasChangesThatRequireVmToBeOff {
 		err := turnOffVmIfOn(ctx, d, client, name)
@@ -1448,6 +1553,18 @@ func resourceHyperVMachineInstanceUpdate(ctx context.Context, d *schema.Resource
 		err = client.CreateOrUpdateVmHardDiskDrives(ctx, name, hardDiskDrives)
 		if err != nil {
 			return diag.FromErr(err)
+		}
+	}
+
+	if d.HasChange("gpu_adapters") {
+		gpuAdapters, err := api.ExpandGpuAdapters(d)
+		if err != nil {
+			return diag.FromErr(err)
+		}
+
+		err = client.CreateOrUpdateVmGpuAdapters(ctx, name, gpuAdapters)
+		if err != nil {
+			return diag.FromErr(fmt.Errorf("error updating gpu adapters for vm: %s - %+v", name, err))
 		}
 	}
 

@@ -1,237 +1,187 @@
-HyperV Terraform Provider
-=========================
+# Terraform Provider for Hyper-V
 
-#This is beta code. Working on adding acceptance tests so that I can mark it as release quality.
+[taliesins/terraform-provider-hyperv](https://github.com/taliesins/terraform-provider-hyperv) のフォークです。
+WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terraform で管理します。
 
-- [Website](https://github.com/taliesins/terraform-provider-hyperv)
-- [Releases](https://github.com/taliesins/terraform-provider-hyperv/releases)
-- [Documentation](https://registry.terraform.io/providers/taliesins/hyperv/latest/docs)
-- [Issues](https://github.com/taliesins/terraform-provider-hyperv/issues)
+## フォーク独自の追加機能
 
-![Hashi Logo](https://cdn.rawgit.com/taliesins/terraform-provider-hyperv/master/website/logo-hashicorp.svg "Hashi Logo")
-![Windows Server Logo](https://cdn.rawgit.com/taliesins/terraform-provider-hyperv/master/website/windows-server-2016-logo.svg "Windows Server Logo")
+### 新規リソース
 
-Features
-------------
-- Remote scheduled task powershell runner does not run into issues with escaping variables or escaping between the different scripting layers.
-- Changed Winrmcp to use Powershell commands directly rather than using base64 encoded strings as we want to prevent Powershell progress leaking.
-- Changed Winrmcp to return path of files on remote box as the location of $env:temp can change in Powershell depending on the session instance.
-- Runs all HyperV commands remotely i.e. so the provider can run on a linux machine and connect remotely to a windows machine running HyperV.
-- Almost all functionality of Powershell HyperV commandlets for the resources is exposed via Terraform resources.
-- Resource - Network Switch
-- Resource - VHD
-- Resource - Virtual Machine Instance
-  - Network adaptors
-  - Hard drives
-  - Dvd drives
+| リソース | 概要 |
+|----------|------|
+| `hyperv_cloudinit_iso` | Cloud-Init NoCloud 互換 ISO をホスト上で直接生成 |
+| `hyperv_vm_checkpoint` | VM チェックポイントの作成・復元・削除（`restore_on_destroy` 対応） |
 
-Requirements
-------------
+### 既存リソースの拡張
 
--	[Terraform](https://www.terraform.io/downloads.html) 1.29.x
--	[Go](https://golang.org/doc/install) 1.26 (to build the provider plugin)
--   Connectivity and credentials to a server running HyperV on Windows 10, Windows Server 2016 or newer
+| リソース | 追加属性 | 概要 |
+|----------|----------|------|
+| `hyperv_machine_instance` | `automatic_checkpoints_enabled` | 自動チェックポイントの有効/無効 |
+| `hyperv_machine_instance` | `gpu_adapters` ブロック | GPU-P (GPU Partitioning) サポート |
 
-Setting up server for Provider usage
-------------------------------------
+### バグ修正・改善
 
-- Install HyperV `Enable-WindowsOptionalFeature -Online -FeatureName:Microsoft-Hyper-V -All`
-- Enable WinRM with negotiate authentication support
+- Gen 2 VM: IDE コントローラ使用時の plan 段階バリデーション追加
+- Gen 2 VM: DVD/HDD BootOrder 判定を .NET 型チェックに変更（日本語ロケール対応）
+- VM Notes: Base64 エンコードで Unicode 文字列を安全に WinRM 転送
+- HardDisk/DVD ドライブの Update/Delete をインデックスベースに統一
+- MAC アドレス `00-00-00-00-00-00` 生成防止（`dynamic_mac_address=true` 時）
+- Go 1.26 対応、golang.org/x/net HTTP/2 脆弱性修正
+
+### CI/CD
+
+- GitHub Actions を最新バージョンに更新
+- govulncheck によるセキュリティスキャン追加
+- goreleaser v2 対応
+
+## 動作環境
+
+- [Terraform](https://www.terraform.io/downloads.html) >= 1.13.0
+- [Go](https://golang.org/doc/install) 1.26（ビルドする場合）
+- Hyper-V が有効な Windows ホスト + WinRM 設定済み
+
+**検証済み環境**: Windows 11 Pro (Hyper-V)
+
+upstream では Windows 10 / Windows Server 2016 以降に対応とされていますが、本フォークでは Windows 11 でのみ検証しています。
+
+## インストール
+
+本フォークは Terraform Registry に公開していないため、ローカルビルドで使用します。
+
+```bash
+# ビルド
+go build -o dist/ .
+
+# ~/.terraformrc に dev_overrides を設定
+cat <<'EOF' > ~/.terraformrc
+provider_installation {
+  dev_overrides {
+    "taliesins/hyperv" = "/path/to/terraform-provider-hyperv/dist"
+  }
+  direct {}
+}
+EOF
 ```
+
+## Hyper-V ホストの WinRM 設定
+
+### 基本設定
+
+```powershell
+# Hyper-V 有効化
+Enable-WindowsOptionalFeature -Online -FeatureName:Microsoft-Hyper-V -All
+
+# WinRM 有効化
 Enable-PSRemoting -SkipNetworkProfileCheck -Force
 
 Set-WSManInstance WinRM/Config/WinRS -ValueSet @{MaxMemoryPerShellMB = 1024}
-Set-WSManInstance WinRM/Config -ValueSet @{MaxTimeoutms=1800000}
-Set-WSManInstance WinRM/Config/Client -ValueSet @{TrustedHosts="*"}
+Set-WSManInstance WinRM/Config -ValueSet @{MaxTimeoutms = 1800000}
+Set-WSManInstance WinRM/Config/Client -ValueSet @{TrustedHosts = "*"}
 Set-WSManInstance WinRM/Config/Service/Auth -ValueSet @{Negotiate = $true}
 ```
-- WinRM allow HTTPS
-```
-#Create CA certificate
-$rootCaName = "DevRootCA"
-$rootCaPassword = ConvertTo-SecureString "P@ssw0rd" -asplaintext -force 
-$rootCaCertificate = Get-ChildItem cert:\LocalMachine\Root |?{$_.subject -eq "CN=$rootCaName"}
-if (!$rootCaCertificate){
-  Get-ChildItem cert:\LocalMachine\My |?{$_.subject -eq "CN=$rootCaName"} | remove-item -force
-  if (Test-Path .\$rootCaName.cer) {
-    remove-item .\$rootCaName.cer -force
-  }
-  if (Test-Path .\$rootCaName.pfx) {
-    remove-item .\$rootCaName.pfx -force
-  }
-  $params = @{
-    Type = 'Custom'
-    DnsName = $rootCaName
-    Subject = "CN=$rootCaName"
-    KeyExportPolicy = 'Exportable'
-    CertStoreLocation = 'Cert:\LocalMachine\My'
-    KeyUsageProperty = 'All'
-    KeyUsage = 'None'
-    Provider = 'Microsoft Strong Cryptographic Provider'
-    KeySpec = 'KeyExchange'
-    KeyLength = 4096
-    HashAlgorithm = 'SHA256'
-    KeyAlgorithm = 'RSA'
-    NotAfter = (Get-Date).AddYears(5)
-  }
-  $rootCaCertificate = New-SelfSignedCertificate @params
 
-  Export-Certificate -Cert $rootCaCertificate -FilePath .\$rootCaName.cer -Verbose
-  Export-PfxCertificate -Cert $rootCaCertificate -FilePath .\$rootCaName.pfx -Password $rootCaPassword -Verbose
-  Get-ChildItem cert:\LocalMachine\My |?{$_.subject -eq "CN=$rootCaName"} | remove-item -force
-  Import-PfxCertificate -FilePath .\$rootCaName.pfx -CertStoreLocation Cert:\LocalMachine\Root -password $rootCaPassword -Exportable -Verbose
-  Import-PfxCertificate -FilePath .\$rootCaName.pfx -CertStoreLocation Cert:\LocalMachine\My -password $rootCaPassword -Exportable -Verbose
-  $rootCaCertificate = Get-ChildItem cert:\LocalMachine\My |?{$_.subject -eq "CN=$rootCaName"}
-}
+### HTTPS リスナー設定
 
-#Create host certificate using CA
+自己署名証明書を使用する場合:
+
+```powershell
+# ホスト証明書作成
 $hostName = [System.Net.Dns]::GetHostName()
-$hostPassword = ConvertTo-SecureString "P@ssw0rd" -asplaintext -force
-$hostCertificate = Get-ChildItem cert:\LocalMachine\My |?{$_.subject -eq "CN=$hostName"}
-if (!$hostCertificate){
-  if (Test-Path .\$hostName.cer) {
-    remove-item .\$hostName.cer -force
-  }
-  if (Test-Path .\$hostName.pfx) {
-    remove-item .\$hostName.pfx -force
-  }
-  $dnsNames = @($hostName, "localhost", "127.0.0.1") + [System.Net.Dns]::GetHostByName($env:computerName).AddressList.IpAddressToString
-  
-  $params = @{
-    Type = 'Custom'
-    DnsName = $dnsNames
-    Subject = "CN=$hostName"
-    KeyExportPolicy = 'Exportable'
-    CertStoreLocation = 'Cert:\LocalMachine\My'
-    KeyUsageProperty = 'All'
-    KeyUsage = @('KeyEncipherment','DigitalSignature','NonRepudiation')
-    TextExtension = @("2.5.29.37={text}1.3.6.1.5.5.7.3.1,1.3.6.1.5.5.7.3.2")
-    Signer = $rootCaCertificate
-    Provider = 'Microsoft Strong Cryptographic Provider'
-    KeySpec = 'KeyExchange'
-    KeyLength = 2048
-    HashAlgorithm = 'SHA256'
-    KeyAlgorithm = 'RSA'
-    NotAfter = (Get-date).AddYears(2)
-  }
-  $hostCertificate = New-SelfSignedCertificate @params
-  Export-Certificate -Cert $hostCertificate -FilePath .\$hostName.cer -Verbose
-  Export-PfxCertificate -Cert $hostCertificate -FilePath .\$hostName.pfx -Password $hostPassword -Verbose
-  Get-ChildItem cert:\LocalMachine\My |?{$_.subject -eq "CN=$hostName"} | remove-item -force
-  Import-PfxCertificate -FilePath .\$hostName.pfx -CertStoreLocation Cert:\LocalMachine\My -password $hostPassword -Exportable -Verbose
-  $hostCertificate = Get-ChildItem cert:\LocalMachine\My |?{$_.subject -eq "CN=$hostName"}
-}
+$dnsNames = @($hostName, "localhost", "127.0.0.1") + [System.Net.Dns]::GetHostByName($env:computerName).AddressList.IpAddressToString
 
+$cert = New-SelfSignedCertificate -DnsName $dnsNames -CertStoreLocation Cert:\LocalMachine\My
+
+# HTTPS リスナー作成
 Get-ChildItem wsman:\localhost\Listener\ | Where-Object -Property Keys -eq 'Transport=HTTPS' | Remove-Item -Recurse
-New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $($hostCertificate.Thumbprint) -Force -Verbose
+New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force
 
-Restart-Service WinRM -Verbose
+Restart-Service WinRM
 
-New-NetFirewallRule -DisplayName "Windows Remote Management (HTTPS-In)" -Name "WinRMHTTPSIn" -Profile Any -LocalPort 5986 -Protocol TCP -Verbose
-```
-- WinRM allow HTTP
-```
-# Get the public networks
-$PubNets = Get-NetConnectionProfile -NetworkCategory Public -ErrorAction SilentlyContinue 
-
-# Set the profile to private
-foreach ($PubNet in $PubNets) {
-    Set-NetConnectionProfile -InterfaceIndex $PubNet.InterfaceIndex -NetworkCategory Private
-}
-
-# Configure winrm
-Set-WSManInstance WinRM/Config/Service -ValueSet @{AllowUnencrypted = $true}
-
-# Restore network categories
-foreach ($PubNet in $PubNets) {
-    Set-NetConnectionProfile -InterfaceIndex $PubNet.InterfaceIndex -NetworkCategory Public
-}
-
-Get-ChildItem wsman:\localhost\Listener\ | Where-Object -Property Keys -eq 'Transport=HTTP' | Remove-Item -Recurse
-New-Item -Path WSMan:\localhost\Listener -Transport HTTP -Address * -Force -Verbose
-
-Restart-Service WinRM -Verbose
-
-New-NetFirewallRule -DisplayName "Windows Remote Management (HTTP-In)" -Name "WinRMHTTPIn" -Profile Any -LocalPort 5985 -Protocol TCP -Verbose
+# ファイアウォールルール
+New-NetFirewallRule -DisplayName "WinRM HTTPS" -Name "WinRMHTTPSIn" -Profile Any -LocalPort 5986 -Protocol TCP
 ```
 
-[Enable Ssl for WinRM using Powershell](https://frontier.town/2011/12/overthere-control-windows-from-java/)
+### 接続テスト
 
-To debug WinRm issues enable debugging by setting environment variable `WINRMCP_DEBUG=1` and `TF_LOG=DEBUG`
-
-Check if you can connect to WinRM
-```
-$hostName=[System.Net.Dns]::GetHostName()
-$winrmPort = "5986"
-
-# Get the credentials of the machine
+```powershell
 $cred = Get-Credential
-
-# Connect to the machine
 $soptions = New-PSSessionOption -SkipCACheck -SkipCNCheck
-Enter-PSSession -ComputerName $hostName -Port $winrmPort -Credential $cred -SessionOption $soptions -UseSSL
+Enter-PSSession -ComputerName $hostName -Port 5986 -Credential $cred -SessionOption $soptions -UseSSL
 ```
 
-Building The Provider
----------------------
+## Provider 設定例
 
-Clone repository to: `$GOPATH/src/github.com/taliesins/terraform-provider-hyperv`
-
-```sh
-$ mkdir -p $GOPATH/src/github.com/taliesins; cd $GOPATH/src/github.com/taliesins
-$ git clone https://github.com/taliesins/terraform-provider-hyperv.git
+```hcl
+provider "hyperv" {
+  user     = "terraform"
+  password = var.hyperv_password
+  host     = "10.0.0.100"
+  port     = 5986
+  https    = true
+  insecure = true
+  use_ntlm = true
+  timeout  = "300s"
+}
 ```
 
-Enter the provider directory and build the provider
+## 使用例
 
-```sh
-$ cd $GOPATH/src/github.com/taliesins/terraform-provider-hyperv
-$ make build
+### Cloud-Init ISO + Ubuntu VM
+
+```hcl
+resource "hyperv_cloudinit_iso" "ubuntu" {
+  destination_iso_file_path = "D:\\Hyper-V\\cloud-init\\ubuntu-01.iso"
+
+  user_data = <<-EOF
+    #cloud-config
+    hostname: ubuntu-01
+    users:
+      - name: admin
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        ssh_authorized_keys:
+          - ${var.ssh_public_key}
+  EOF
+
+  meta_data = <<-EOF
+    instance-id: ubuntu-01
+    local-hostname: ubuntu-01
+  EOF
+}
+
+resource "hyperv_machine_instance" "ubuntu" {
+  name                          = "ubuntu-01"
+  generation                    = 2
+  processor_count               = 2
+  static_memory                 = true
+  memory_startup_bytes          = 4294967296  # 4GB
+  automatic_checkpoints_enabled = false
+  checkpoint_type               = "Disabled"
+
+  # ...
+}
 ```
 
-Using the provider
-----------------------
-## Fill in for each provider
+### VM Checkpoint（Chaos Engineering 向け）
 
-Developing the Provider
----------------------------
-
-If you wish to work on the provider, you'll first need [Go](http://www.golang.org) installed on your machine (version 1.26+ is *required*). You'll also need to correctly setup a [GOPATH](http://golang.org/doc/code.html#GOPATH), as well as adding `$GOPATH/bin` to your `$PATH`.
-
-To compile the provider, run `make build`. This will build the provider and put the provider binary in the `$GOPATH/bin` directory.
-
-You should also use the terraform [documentation](https://developer.hashicorp.com/terraform/tutorials/providers-plugin-framework/providers-plugin-framework-provider#prepare-terraform-for-local-provider-install) to setup the terraform environment correctly so that you can use your locally compiled version.
-
-```sh
-$ make build
-...
-$ $GOPATH/bin/terraform-provider-hyperv
-...
+```hcl
+resource "hyperv_vm_checkpoint" "pre_chaos" {
+  vm_name            = "worker-01"
+  checkpoint_name    = "pre-chaos-experiment"
+  restore_on_destroy = true
+}
 ```
 
-In order to test the provider, you can simply run `make test`.
+## デバッグ
 
-```sh
-$ make test
+```bash
+# Terraform ログ
+export TF_LOG=DEBUG
+
+# WinRM デバッグ
+export WINRMCP_DEBUG=1
 ```
 
-In order to run the full suite of Acceptance tests, run `make testacc`.
+## 関連リンク
 
-*Note:* Acceptance tests create real resources, and often cost money to run.
-
-```sh
-$ make testacc
-```
-
-Debugging the Provider
-----------------------
-
-To set Terraform log level:
-```
-set TF_LOG=TRACE
-```
-
-To view powershell commands that are sent:
-```
-set WINRMCP_DEBUG=TRUE
-```
+- [Upstream](https://github.com/taliesins/terraform-provider-hyperv)
+- [Terraform Registry (upstream)](https://registry.terraform.io/providers/taliesins/hyperv/latest/docs)

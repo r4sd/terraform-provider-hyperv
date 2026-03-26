@@ -19,21 +19,6 @@ on:
     paths-ignore:
       - 'CHANGELOG.md'
   pull_request:
-    paths:
-      - .github/workflows/release.yml
-      - .golangci.yml
-      - .goreleaser.yml
-      - .semgrep.yml
-      - interal/**
-      - api/**
-      - powershell/**
-      - examples/**
-      - docs/**
-      - go.sum
-      - GNUmakefile
-      - main.go
-      - staticcheck.conf
-      - website/**
 
 env:
   GO_VERSION: "1.26.1"

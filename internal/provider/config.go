@@ -259,6 +259,11 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 //
 // 認証: 現行の Provider 設定 (NTLM / Basic / Cert) のうち、Phase A では NTLM のみサポート。
 // Kerberos / Cert は Phase B 以降で必要になったタイミングで対応する。
+//
+// TLS 証明書検証:
+//   - provider 設定 insecure=false (デフォルト): 証明書検証あり
+//   - provider 設定 insecure=true: WithInsecureSkipVerify() で検証スキップ
+//     (homelab のように自己署名証明書を使う環境向け)
 func newWsmanClient(config *Config) (*gowsman.Client, error) {
 	scheme := "http"
 	if config.HTTPS {
@@ -269,6 +274,9 @@ func newWsmanClient(config *Config) (*gowsman.Client, error) {
 	opts := []gowsmanproto.ClientOption{}
 	if config.NTLM {
 		opts = append(opts, gowsmanproto.WithNTLM(config.User, config.Password))
+	}
+	if config.Insecure {
+		opts = append(opts, gowsmanproto.WithInsecureSkipVerify())
 	}
 
 	return gowsman.NewClient(endpoint, opts...)

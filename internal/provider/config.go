@@ -5,18 +5,31 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	gowsman "github.com/r4sd/go-wsman/hyperv"
+	gowsmanproto "github.com/r4sd/go-wsman/wsman"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 	hyperv_winrm "github.com/taliesins/terraform-provider-hyperv/api/hyperv-winrm"
+	hyperv_wsman "github.com/taliesins/terraform-provider-hyperv/api/hyperv-wsman"
 
 	"github.com/dylanmei/iso8601"
 	pool "github.com/jolestar/go-commons-pool/v2"
 	winrm "github.com/masterzen/winrm"
 	winrm_helper "github.com/taliesins/terraform-provider-hyperv/api/winrm-helper"
 )
+
+// useWsmanEnabled は go-wsman 経由のクライアントを使うかを判定する。
+//
+// Phase A 段階では環境変数 HYPERV_USE_WSMAN=1 のみで切替。Phase E 直前に
+// Provider schema へ昇格するか、デフォルト切替するかを判断する。
+func useWsmanEnabled() bool {
+	v := os.Getenv("HYPERV_USE_WSMAN")
+	return v == "1" || strings.EqualFold(v, "true")
+}
 
 type Config struct {
 	Version          string
@@ -224,7 +237,39 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 		return nil, err
 	}
 
-	return hyperv_winrm.New(&hyperv_winrm.ClientConfig{
+	winrmConfig := &hyperv_winrm.ClientConfig{
 		WinRmClient: winrmHelperProvider.Client,
-	})
+	}
+
+	// feature flag: HYPERV_USE_WSMAN=1 で go-wsman 経由のクライアントに切替。
+	// 未移行メソッドは winrmConfig 経由で従来の PowerShell 実装にフォールバックする。
+	if useWsmanEnabled() {
+		log.Printf("[INFO][hyperv] HYPERV_USE_WSMAN enabled. Using go-wsman client for migrated resources.")
+		wsmanClient, err := newWsmanClient(config)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize go-wsman client: %w", err)
+		}
+		return hyperv_wsman.New(winrmConfig, wsmanClient)
+	}
+
+	return hyperv_winrm.New(winrmConfig)
+}
+
+// newWsmanClient は config から go-wsman の hyperv.Client を構築する。
+//
+// 認証: 現行の Provider 設定 (NTLM / Basic / Cert) のうち、Phase A では NTLM のみサポート。
+// Kerberos / Cert は Phase B 以降で必要になったタイミングで対応する。
+func newWsmanClient(config *Config) (*gowsman.Client, error) {
+	scheme := "http"
+	if config.HTTPS {
+		scheme = "https"
+	}
+	endpoint := fmt.Sprintf("%s://%s:%d/wsman", scheme, config.Host, config.Port)
+
+	opts := []gowsmanproto.ClientOption{}
+	if config.NTLM {
+		opts = append(opts, gowsmanproto.WithNTLM(config.User, config.Password))
+	}
+
+	return gowsman.NewClient(endpoint, opts...)
 }

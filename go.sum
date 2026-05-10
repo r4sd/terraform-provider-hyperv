@@ -203,6 +203,8 @@ github.com/posener/complete v1.2.3 h1:NP0eAhjcjImqslEwo/1hq7gpajME0fTLTezBKDqfXq
 github.com/posener/complete v1.2.3/go.mod h1:WZIdtGGp+qx0sLrYKtIRAruyNpv6hFCicSgv7Sy7s/s=
 github.com/r4sd/go-wsman v0.0.0-20260510112413-c6a45a3c107c h1:BuKRAehDRd3LlnQlCfVLAzudFlPSnUDLY648IkfiV0U=
 github.com/r4sd/go-wsman v0.0.0-20260510112413-c6a45a3c107c/go.mod h1:ZwgnmLAq4uxW3yhEzp5AQLqM5d+R/S++/LwoTYhVygg=
+github.com/r4sd/go-wsman v0.0.0-20260510143113-8c66e1a969a0 h1:zcyI0CDjIS6F45RO/ItNkE4BjPeDRq69zcmpP/cPEJ4=
+github.com/r4sd/go-wsman v0.0.0-20260510143113-8c66e1a969a0/go.mod h1:ZwgnmLAq4uxW3yhEzp5AQLqM5d+R/S++/LwoTYhVygg=
 github.com/rogpeppe/go-internal v1.12.0 h1:exVL4IDcn6na9z1rAb56Vxr+CgyK3nn3O+epU5NdKM8=
 github.com/rogpeppe/go-internal v1.12.0/go.mod h1:E+RYuTGaKKdloAfM02xzb0FW3Paa99yedzYV+kq4uf4=
 github.com/russross/blackfriday v1.6.0 h1:KqfZb0pUVN2lYqZUYRddxF4OR8ZMURnJIG5Y3VRLtww=

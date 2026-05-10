@@ -21,7 +21,6 @@ on:
   pull_request:
 
 env:
-  GO_VERSION: "1.26.1"
   GO111MODULE: on
   TERRAFORM_VERSION: "1.5.5"
   GIT_CHGLOG_VERSION: "0.15.4"
@@ -50,7 +49,7 @@ jobs:
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
       uses: actions/setup-go@v6
       with:
-        go-version: ${{ env.GO_VERSION }}
+        go-version-file: .go-version
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
       name: go mod download
       run: go mod download
@@ -99,7 +98,7 @@ jobs:
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure' || steps.cache-go-build.outputs.cache-hit != 'true' || steps.cache-go-build.outcome == 'failure' || steps.cache-terraform-plugin-dir.outputs.cache-hit != 'true' || steps.cache-terraform-plugin-dir.outcome == 'failure'
       uses: actions/setup-go@v6
       with:
-        go-version: ${{ env.GO_VERSION }}
+        go-version-file: .go-version
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
       name: go mod download
       run: go mod download
@@ -186,7 +185,7 @@ jobs:
           ${{ runner.os }}-go-build
     - uses: actions/setup-go@v6
       with:
-        go-version: ${{ env.GO_VERSION }}
+        go-version-file: .go-version
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
       name: go mod download
       run: go mod download
@@ -234,7 +233,7 @@ jobs:
             ${{ runner.os }}-go-build
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
         name: go mod download
         run: go mod download
@@ -273,7 +272,7 @@ jobs:
             ${{ runner.os }}-go-build
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
         name: go mod download
         run: go mod download
@@ -336,7 +335,7 @@ jobs:
             ${{ runner.os }}-go-build
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: .go-version
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
         name: go mod download
         run: go mod download

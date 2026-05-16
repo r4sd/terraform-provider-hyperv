@@ -41,6 +41,7 @@ type updateVmStatusArgs struct {
 	Timeout      uint32
 	PollPeriod   uint32
 	VmStatusJson string
+	TurnOff      bool
 }
 
 var updateVmStatusTemplate = template.Must(template.New("UpdateVmStatus").Parse(`
@@ -138,9 +139,9 @@ if ($vmObject.State -ne $state) {
         } else {
             throw "Unable to change VM $($vmName) state $($vmObject.State) to Running state"
         }
-    } elseif ($state -eq [Microsoft.HyperV.PowerShell.VMState]::Off) { 
-        if ($vmObject.State -eq [Microsoft.HyperV.PowerShell.VMState]::Running -or $vmObject.State -eq [Microsoft.HyperV.PowerShell.VMState]::Paused) { 
-            Stop-VM -Name $vmName -force
+    } elseif ($state -eq [Microsoft.HyperV.PowerShell.VMState]::Off) {
+        if ($vmObject.State -eq [Microsoft.HyperV.PowerShell.VMState]::Running -or $vmObject.State -eq [Microsoft.HyperV.PowerShell.VMState]::Paused) {
+            {{if .TurnOff}}Stop-VM -Name $vmName -TurnOff -Force{{else}}Stop-VM -Name $vmName -Force{{end}}
             Start-Sleep -Seconds $pollPeriod
             Wait-IsInFinalTransitionState -Name $vmName -Timeout $timeout -PollPeriod $pollPeriod
         } else {
@@ -164,6 +165,7 @@ func (c *ClientConfig) UpdateVmStatus(
 	timeout uint32,
 	pollPeriod uint32,
 	state api.VmState,
+	turnOff bool,
 ) (err error) {
 	vmStatusJson, err := json.Marshal(api.VmStatus{
 		State: state,
@@ -178,6 +180,7 @@ func (c *ClientConfig) UpdateVmStatus(
 		Timeout:      timeout,
 		PollPeriod:   pollPeriod,
 		VmStatusJson: string(vmStatusJson),
+		TurnOff:      turnOff,
 	})
 
 	return err

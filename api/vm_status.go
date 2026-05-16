@@ -165,5 +165,6 @@ type HypervVmStatusClient interface {
 		timeout uint32,
 		pollPeriod uint32,
 		state VmState,
+		turnOff bool,
 	) (err error)
 }

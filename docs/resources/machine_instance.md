@@ -232,6 +232,7 @@ resource "hyperv_machine_instance" "default" {
 - `state` (String) Valid values to use are `Running`, `Off`. Specifies if the machine instance will be running or off.
 - `static_memory` (Boolean) Specifies if the machine instance will use static memory.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+- `turn_off_on_destroy` (Boolean) If true, the VM will be turned off (hard power off) instead of attempting a graceful shutdown when destroyed. This is useful for VMs that do not respond to Hyper-V shutdown integration services, such as Linux K8s nodes.
 - `vm_firmware` (Block List, Max: 1) (see [below for nested schema](#nestedblock--vm_firmware))
 - `vm_processor` (Block List, Max: 1) (see [below for nested schema](#nestedblock--vm_processor))
 - `wait_for_ips_poll_period` (Number) The amount of time in seconds to wait between trying to get ip addresses for network cards on the virtual machine.

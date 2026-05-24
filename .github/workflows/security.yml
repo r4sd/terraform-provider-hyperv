@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - master
+      - main
   schedule:
     # 毎週月曜 09:00 UTC (18:00 JST)
     - cron: "0 9 * * 1"

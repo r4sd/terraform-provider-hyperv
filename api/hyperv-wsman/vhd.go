@@ -25,6 +25,32 @@ func (c *ClientConfig) VhdExists(ctx context.Context, path string) (api.VhdExist
 	return api.VhdExists{Exists: true}, nil
 }
 
+// ResizeVhd は go-wsman 経由で既存 VHD/VHDX のサイズ (MaxInternalSize) を変更する。
+//
+// PowerShell 版 (hyperv_winrm.ResizeVhd) は同期 (Resize-VHD がブロック完了) だが、
+// CIM の Msvm_ImageManagementService.ResizeVirtualHardDisk は ReturnValue=0 で
+// 同期完了、4096 で非同期 Job 開始。Hyper-V の通常挙動では Resize は同期完了する
+// ことが多いため、現状は同期成功のみ素通し、非同期開始時は WARN ログのみ出して
+// 待機しない (Phase B-X.X 等で Job 完了待ちヘルパーを別実装予定)。
+//
+// 制約 (CIM 仕様):
+//   - Fixed VHD: 拡大のみ可
+//   - Dynamic/Differencing: MaxInternalSize の縮小も可 (実データ末尾まで)
+//   - VM へアタッチ中: オフライン状態のみ縮小可
+func (c *ClientConfig) ResizeVhd(ctx context.Context, path string, size uint64) error {
+	jobRef, err := c.WsmanClient.ResizeVirtualHardDisk(ctx, path, size)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: ResizeVhd %q: %w", path, err)
+	}
+	if jobRef != "" {
+		// ReturnValue=4096 (非同期開始): provider 側は同期完了を期待するが、
+		// 現状は Job 完了待ちヘルパー未実装のため WARN ログのみ。
+		// 実用上は Resize は同期完了が多いためレアケース。問題化したら別 PR で実装。
+		log.Printf("[WARN][hyperv-wsman] ResizeVhd started asynchronously (jobRef=%s), not waiting for completion. Path=%q Size=%d", jobRef, path, size)
+	}
+	return nil
+}
+
 // GetVhd は go-wsman 経由で VHD/VHDX の構成情報を取得する。
 //
 // PowerShell 版 (hyperv_winrm.GetVhd) と互換性のあるサブセット。Msvm_VirtualHardDiskSettingData

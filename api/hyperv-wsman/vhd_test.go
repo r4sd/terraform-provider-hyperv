@@ -10,9 +10,9 @@ import (
 // TestClientConfig_ImplementsHypervVhdClient は ClientConfig が
 // api.HypervVhdClient を実装することを検証する。
 //
-// 重要: VhdExists は本パッケージで定義されているため、シャドウイング (override)
-// が効いて hyperv-winrm の実装ではなく hyperv-wsman の実装が呼ばれる。
-// 残りの 4 メソッド (CreateOrUpdateVhd / ResizeVhd / GetVhd / DeleteVhd) は
+// 重要: VhdExists / GetVhd は本パッケージで定義されているため、シャドウイング
+// (override) が効いて hyperv-winrm の実装ではなく hyperv-wsman の実装が呼ばれる。
+// 残りの 3 メソッド (CreateOrUpdateVhd / ResizeVhd / DeleteVhd) は
 // 埋め込みの hyperv_winrm.ClientConfig から promotion される。
 func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 	// 型レベルでインターフェース実装を確認する (実行時にメソッド呼び出しはしない)
@@ -23,9 +23,9 @@ func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 	cType := reflect.TypeOf((*ClientConfig)(nil))
 	for _, methodName := range []string{
 		"VhdExists",         // ← 本パッケージで定義 (シャドウイング)
+		"GetVhd",            // ← 本パッケージで定義 (シャドウイング、Phase B-X.1)
 		"CreateOrUpdateVhd", // ← hyperv-winrm から promotion
 		"ResizeVhd",         // ← hyperv-winrm から promotion
-		"GetVhd",            // ← hyperv-winrm から promotion
 		"DeleteVhd",         // ← hyperv-winrm から promotion
 	} {
 		if _, ok := cType.MethodByName(methodName); !ok {
@@ -53,5 +53,26 @@ func TestClientConfig_VhdExists_DefinedInWsmanPackage(t *testing.T) {
 	}
 	if method.Type.NumOut() != 2 { // VhdExists + error
 		t.Errorf("VhdExists signature mismatch: NumOut=%d", method.Type.NumOut())
+	}
+}
+
+// TestClientConfig_GetVhd_DefinedInWsmanPackage は GetVhd が
+// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する。
+//
+// これにより hyperv_winrm.ClientConfig.GetVhd ではなく、本パッケージの
+// 実装が呼ばれることが保証される (シャドウイング)。
+func TestClientConfig_GetVhd_DefinedInWsmanPackage(t *testing.T) {
+	cType := reflect.TypeOf((*ClientConfig)(nil))
+	method, ok := cType.MethodByName("GetVhd")
+	if !ok {
+		t.Fatal("ClientConfig should have GetVhd method")
+	}
+
+	// シグネチャ: (c *ClientConfig).GetVhd(ctx, path) (api.Vhd, error)
+	if method.Type.NumIn() != 3 { // receiver + ctx + path
+		t.Errorf("GetVhd signature mismatch: NumIn=%d, want 3", method.Type.NumIn())
+	}
+	if method.Type.NumOut() != 2 { // api.Vhd + error
+		t.Errorf("GetVhd signature mismatch: NumOut=%d, want 2", method.Type.NumOut())
 	}
 }

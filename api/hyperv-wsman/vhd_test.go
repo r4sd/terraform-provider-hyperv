@@ -24,8 +24,8 @@ func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 	for _, methodName := range []string{
 		"VhdExists",         // ← 本パッケージで定義 (シャドウイング)
 		"GetVhd",            // ← 本パッケージで定義 (シャドウイング、Phase B-X.1)
+		"ResizeVhd",         // ← 本パッケージで定義 (シャドウイング、Phase B-X.2)
 		"CreateOrUpdateVhd", // ← hyperv-winrm から promotion
-		"ResizeVhd",         // ← hyperv-winrm から promotion
 		"DeleteVhd",         // ← hyperv-winrm から promotion
 	} {
 		if _, ok := cType.MethodByName(methodName); !ok {
@@ -74,5 +74,23 @@ func TestClientConfig_GetVhd_DefinedInWsmanPackage(t *testing.T) {
 	}
 	if method.Type.NumOut() != 2 { // api.Vhd + error
 		t.Errorf("GetVhd signature mismatch: NumOut=%d, want 2", method.Type.NumOut())
+	}
+}
+
+// TestClientConfig_ResizeVhd_DefinedInWsmanPackage は ResizeVhd が
+// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する (Phase B-X.2)。
+func TestClientConfig_ResizeVhd_DefinedInWsmanPackage(t *testing.T) {
+	cType := reflect.TypeOf((*ClientConfig)(nil))
+	method, ok := cType.MethodByName("ResizeVhd")
+	if !ok {
+		t.Fatal("ClientConfig should have ResizeVhd method")
+	}
+
+	// シグネチャ: (c *ClientConfig).ResizeVhd(ctx, path, size) error
+	if method.Type.NumIn() != 4 { // receiver + ctx + path + size
+		t.Errorf("ResizeVhd signature mismatch: NumIn=%d, want 4", method.Type.NumIn())
+	}
+	if method.Type.NumOut() != 1 { // error
+		t.Errorf("ResizeVhd signature mismatch: NumOut=%d, want 1", method.Type.NumOut())
 	}
 }

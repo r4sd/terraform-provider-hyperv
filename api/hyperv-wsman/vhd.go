@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
+	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
@@ -47,6 +49,100 @@ func (c *ClientConfig) ResizeVhd(ctx context.Context, path string, size uint64) 
 		// 現状は Job 完了待ちヘルパー未実装のため WARN ログのみ。
 		// 実用上は Resize は同期完了が多いためレアケース。問題化したら別 PR で実装。
 		log.Printf("[WARN][hyperv-wsman] ResizeVhd started asynchronously (jobRef=%s), not waiting for completion. Path=%q Size=%d", jobRef, path, size)
+	}
+	return nil
+}
+
+// vhdFormatFromPath はファイル拡張子から CIM の DiskFormat 値を導出する。
+//
+// PowerShell の New-VHD は拡張子からフォーマットを推論するが、CIM の
+// CreateVirtualHardDisk は明示的な Format (2=VHD, 3=VHDX, 4=VHDSet) を要求する。
+// 拡張子で判定し、不明な場合は modern default の VHDX を返す。
+func vhdFormatFromPath(path string) uint16 {
+	switch {
+	case strings.HasSuffix(strings.ToLower(path), ".vhdx"):
+		return uint16(api.VhdFormat_VHDX)
+	case strings.HasSuffix(strings.ToLower(path), ".vhds"):
+		return uint16(api.VhdFormat_VHDSet)
+	case strings.HasSuffix(strings.ToLower(path), ".vhd"):
+		return uint16(api.VhdFormat_VHD)
+	default:
+		return uint16(api.VhdFormat_VHDX)
+	}
+}
+
+// vhdDiskType は api.VhdType を CIM の DiskType (uint16) に安全に変換する。
+//
+// 直接 uint16(vhdType) すると、vhdType が provider 上流で strconv.Atoi 由来
+// (アーキ依存幅 int) のため CodeQL が上限チェックなしの縮小変換 (high) として検出する。
+// 既知 enum を switch で明示マッピングし、不明値は 0 (Unknown) にフォールバックする。
+func vhdDiskType(t api.VhdType) uint16 {
+	switch t {
+	case api.VhdType_Fixed:
+		return 2
+	case api.VhdType_Dynamic:
+		return 3
+	case api.VhdType_Differencing:
+		return 4
+	default:
+		return 0 // Unknown
+	}
+}
+
+// CreateOrUpdateVhd は go-wsman 経由で VHD/VHDX を作成または更新する。
+//
+// PowerShell 版 (hyperv_winrm.CreateOrUpdateVhd) の挙動を分岐ごとに再現:
+//   - source 指定 (ファイルコピー) / sourceVm 指定 (VM ディスクキャプチャ):
+//     CIM の範囲外 (ファイル操作・Convert-VHD) のため、埋め込みの PowerShell 実装に
+//     フォールバックする (戦略確定: 案 D)。
+//   - 既存 VHD あり: サイズ差があれば Resize、なければ no-op。
+//   - 新規作成 (通常 / 差分ディスク): Msvm_ImageManagementService.CreateVirtualHardDisk。
+//
+// 非同期 Job (ReturnValue=4096) は現状 WARN ログのみで待機しない (Resize と同様)。
+func (c *ClientConfig) CreateOrUpdateVhd(ctx context.Context, path string, source string, sourceVm string, sourceDisk int, vhdType api.VhdType, parentPath string, size uint64, blockSize uint32, logicalSectorSize uint32, physicalSectorSize uint32) error {
+	// 案 D: source コピー / VM ディスクキャプチャは CIM 範囲外 → PowerShell 経路へ委譲。
+	if source != "" || sourceVm != "" {
+		// 注意: 本関数は source (URL 形式で認証情報を埋め込める) を扱うため、
+		// CodeQL go/clear-text-logging が caller 由来の値のログ出力を secret 漏洩として
+		// 検出する。caller 由来の path は出さない。
+		log.Printf("[DEBUG][hyperv-wsman] CreateOrUpdateVhd: source/sourceVm 指定のため PowerShell 経路にフォールバック")
+		return c.ClientConfig.CreateOrUpdateVhd(ctx, path, source, sourceVm, sourceDisk, vhdType, parentPath, size, blockSize, logicalSectorSize, physicalSectorSize)
+	}
+
+	// 既存チェック: あればサイズ更新のみ (PowerShell の path-exists 分岐に対応)。
+	// GetVirtualHardDisk が成功 = 既存あり。エラーは「不在」扱い (VhdExists と同セマンティクス)。
+	if existing, err := c.WsmanClient.GetVirtualHardDisk(ctx, path); err == nil && existing != nil {
+		if size > 0 && existing.MaxInternalSize != size {
+			return c.ResizeVhd(ctx, path, size)
+		}
+		return nil
+	}
+
+	// 新規作成。DiskFormat は拡張子から導出、DiskType は vhdType (parentPath 指定時は差分)。
+	// vhdType は provider 上流で strconv.Atoi 由来 (アーキ依存幅 int) のため、直接
+	// uint16(vhdType) すると CodeQL go/incorrect-integer-conversion (上限チェックなし
+	// 縮小変換) を high 検出する。既知 enum のみ switch で安全に uint16 化する。
+	diskType := vhdDiskType(vhdType)
+	if parentPath != "" {
+		diskType = vhdDiskType(api.VhdType_Differencing)
+	}
+
+	jobRef, err := c.WsmanClient.CreateVirtualHardDisk(ctx, &hyperv.Msvm_VirtualHardDiskSettingData{
+		Path:               path,
+		ParentPath:         parentPath,
+		MaxInternalSize:    size,
+		BlockSize:          blockSize,
+		LogicalSectorSize:  logicalSectorSize,
+		PhysicalSectorSize: physicalSectorSize,
+		VirtualDiskFormat:  vhdFormatFromPath(path),
+		VirtualDiskType:    diskType,
+	})
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVhd %q: %w", path, err)
+	}
+	if jobRef != "" {
+		// caller 由来の path は出さず、サーバー生成の jobRef のみログする (clear-text-logging 対策)。
+		log.Printf("[WARN][hyperv-wsman] CreateOrUpdateVhd started asynchronously (jobRef=%s), not waiting for completion.", jobRef)
 	}
 	return nil
 }

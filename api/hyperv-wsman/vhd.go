@@ -84,7 +84,10 @@ func vhdFormatFromPath(path string) uint16 {
 func (c *ClientConfig) CreateOrUpdateVhd(ctx context.Context, path string, source string, sourceVm string, sourceDisk int, vhdType api.VhdType, parentPath string, size uint64, blockSize uint32, logicalSectorSize uint32, physicalSectorSize uint32) error {
 	// 案 D: source コピー / VM ディスクキャプチャは CIM 範囲外 → PowerShell 経路へ委譲。
 	if source != "" || sourceVm != "" {
-		log.Printf("[DEBUG][hyperv-wsman] CreateOrUpdateVhd: source/sourceVm 指定のため PowerShell 経路にフォールバック (Path=%q)", path)
+		// 注意: 本関数は source (URL 形式で認証情報を埋め込める) を扱うため、
+		// CodeQL go/clear-text-logging が caller 由来の値のログ出力を secret 漏洩として
+		// 検出する。caller 由来の path は出さない。
+		log.Printf("[DEBUG][hyperv-wsman] CreateOrUpdateVhd: source/sourceVm 指定のため PowerShell 経路にフォールバック")
 		return c.ClientConfig.CreateOrUpdateVhd(ctx, path, source, sourceVm, sourceDisk, vhdType, parentPath, size, blockSize, logicalSectorSize, physicalSectorSize)
 	}
 
@@ -117,7 +120,8 @@ func (c *ClientConfig) CreateOrUpdateVhd(ctx context.Context, path string, sourc
 		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVhd %q: %w", path, err)
 	}
 	if jobRef != "" {
-		log.Printf("[WARN][hyperv-wsman] CreateOrUpdateVhd started asynchronously (jobRef=%s), not waiting for completion. Path=%q", jobRef, path)
+		// caller 由来の path は出さず、サーバー生成の jobRef のみログする (clear-text-logging 対策)。
+		log.Printf("[WARN][hyperv-wsman] CreateOrUpdateVhd started asynchronously (jobRef=%s), not waiting for completion.", jobRef)
 	}
 	return nil
 }

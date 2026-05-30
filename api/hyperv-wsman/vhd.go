@@ -71,6 +71,24 @@ func vhdFormatFromPath(path string) uint16 {
 	}
 }
 
+// vhdDiskType は api.VhdType を CIM の DiskType (uint16) に安全に変換する。
+//
+// 直接 uint16(vhdType) すると、vhdType が provider 上流で strconv.Atoi 由来
+// (アーキ依存幅 int) のため CodeQL が上限チェックなしの縮小変換 (high) として検出する。
+// 既知 enum を switch で明示マッピングし、不明値は 0 (Unknown) にフォールバックする。
+func vhdDiskType(t api.VhdType) uint16 {
+	switch t {
+	case api.VhdType_Fixed:
+		return 2
+	case api.VhdType_Dynamic:
+		return 3
+	case api.VhdType_Differencing:
+		return 4
+	default:
+		return 0 // Unknown
+	}
+}
+
 // CreateOrUpdateVhd は go-wsman 経由で VHD/VHDX を作成または更新する。
 //
 // PowerShell 版 (hyperv_winrm.CreateOrUpdateVhd) の挙動を分岐ごとに再現:
@@ -101,9 +119,12 @@ func (c *ClientConfig) CreateOrUpdateVhd(ctx context.Context, path string, sourc
 	}
 
 	// 新規作成。DiskFormat は拡張子から導出、DiskType は vhdType (parentPath 指定時は差分)。
-	diskType := uint16(vhdType)
+	// vhdType は provider 上流で strconv.Atoi 由来 (アーキ依存幅 int) のため、直接
+	// uint16(vhdType) すると CodeQL go/incorrect-integer-conversion (上限チェックなし
+	// 縮小変換) を high 検出する。既知 enum のみ switch で安全に uint16 化する。
+	diskType := vhdDiskType(vhdType)
 	if parentPath != "" {
-		diskType = uint16(api.VhdType_Differencing)
+		diskType = vhdDiskType(api.VhdType_Differencing)
 	}
 
 	jobRef, err := c.WsmanClient.CreateVirtualHardDisk(ctx, &hyperv.Msvm_VirtualHardDiskSettingData{

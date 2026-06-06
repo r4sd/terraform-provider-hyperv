@@ -147,6 +147,42 @@ func (c *ClientConfig) CreateOrUpdateVhd(ctx context.Context, path string, sourc
 	return nil
 }
 
+// vhdDeletePrefix は VHD パスから「削除対象ディレクトリ」と「prefix」(末尾拡張子を
+// 除いたファイル名) を導出する。
+//
+// PowerShell 版 (hyperv_winrm.deleteVhdTemplate) の targetName 抽出を再現:
+//
+//	$targetName = (split-path $Path -Leaf)                          # ファイル名 (拡張子込み)
+//	$targetName = $targetName.Substring(0, LastIndexOf('.'))        # 末尾拡張子を除去
+//
+// 例: C:\vms\disk.vhdx -> ("C:\vms", "disk") / my.disk.vhdx -> (..., "my.disk")
+//
+// Windows パス (バックスラッシュ区切り) 前提だがスラッシュ区切りも許容する。
+// path/filepath は実行 OS 依存 (darwin では \ を区切りと見なさない) のため手動でパースする。
+func vhdDeletePrefix(path string) (dir string, prefix string) {
+	leaf := path
+	if idx := strings.LastIndexAny(path, `\/`); idx >= 0 {
+		dir = path[:idx]
+		leaf = path[idx+1:]
+	}
+	prefix = leaf
+	if dot := strings.LastIndex(leaf, "."); dot >= 0 {
+		prefix = leaf[:dot]
+	}
+	return dir, prefix
+}
+
+// DeleteVhd は移行戦略の案D に従い、provider 側の WinRM 薄ラッパーで VHD/VHDX
+// ファイルを削除する。
+//
+// ファイル削除は CIM (Msvm_*) の責務範囲外のため go-wsman は使わず、
+// winrm-helper.RemoveFilesByPrefix を呼ぶ。PowerShell 版 (hyperv_winrm.DeleteVhd)
+// と同じく、同 prefix の差分ディスク (.avhdx 等) も一括削除する。
+func (c *ClientConfig) DeleteVhd(ctx context.Context, path string) error {
+	dir, prefix := vhdDeletePrefix(path)
+	return c.WinRmClient.RemoveFilesByPrefix(ctx, dir, prefix)
+}
+
 // GetVhd は go-wsman 経由で VHD/VHDX の構成情報を取得する。
 //
 // PowerShell 版 (hyperv_winrm.GetVhd) と互換性のあるサブセット。Msvm_VirtualHardDiskSettingData

@@ -13,6 +13,7 @@ type Client interface {
 	FileExists(ctx context.Context, remoteFilePath string) (exists bool, err error)
 	DirectoryExists(ctx context.Context, remoteDirectoryPath string) (exists bool, err error)
 	DeleteFileOrDirectory(ctx context.Context, remotePath string) (err error)
+	RemoveFilesByPrefix(ctx context.Context, dir string, prefix string) (err error)
 }
 
 type Provider struct {

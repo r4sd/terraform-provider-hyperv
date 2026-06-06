@@ -7,6 +7,10 @@ env:
   GIT_CHGLOG_VERSION: "0.15.4"
   SVU_VERSION: "1.12.0"
 
+# CHANGELOG コミット + タグ作成のため書き込みが必要。
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest

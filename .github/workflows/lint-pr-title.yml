@@ -6,6 +6,10 @@ on:
       - edited
       - synchronize
 
+# PR タイトルの読み取りのみ。pull_request_target なので最小権限に絞る。
+permissions:
+  pull-requests: read
+
 jobs:
   main:
     runs-on: ubuntu-latest

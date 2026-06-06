@@ -28,6 +28,10 @@ env:
   TEST_TIME_OUT: "120s"
   RELEASE_TIME_OUT: "30m"
 
+# 既定は最小権限 (読み取りのみ)。書き込みが要る goreleaser ジョブで個別に昇格する。
+permissions:
+  contents: read
+
 jobs:
   go_mod_download:
     name: go mod download
@@ -299,6 +303,9 @@ jobs:
   goreleaser:
     needs: [go_build]
     runs-on: ubuntu-latest
+    # リリース成果物のアップロード + CHANGELOG コミットのため書き込みが必要。
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:

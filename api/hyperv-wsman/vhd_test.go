@@ -10,10 +10,9 @@ import (
 // TestClientConfig_ImplementsHypervVhdClient は ClientConfig が
 // api.HypervVhdClient を実装することを検証する。
 //
-// 重要: VhdExists / GetVhd は本パッケージで定義されているため、シャドウイング
-// (override) が効いて hyperv-winrm の実装ではなく hyperv-wsman の実装が呼ばれる。
-// 残りの 3 メソッド (CreateOrUpdateVhd / ResizeVhd / DeleteVhd) は
-// 埋め込みの hyperv_winrm.ClientConfig から promotion される。
+// 重要: VHD クライアントの全 5 メソッドが本パッケージで定義されているため、
+// シャドウイング (override) が効いて hyperv-winrm の実装ではなく hyperv-wsman の
+// 実装が呼ばれる。Phase B-X.4 (DeleteVhd) 完了により VHD CRUD は全て移行済み。
 func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 	// 型レベルでインターフェース実装を確認する (実行時にメソッド呼び出しはしない)
 	var c *ClientConfig
@@ -25,8 +24,8 @@ func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 		"VhdExists",         // ← 本パッケージで定義 (シャドウイング)
 		"GetVhd",            // ← 本パッケージで定義 (シャドウイング、Phase B-X.1)
 		"ResizeVhd",         // ← 本パッケージで定義 (シャドウイング、Phase B-X.2)
-		"CreateOrUpdateVhd", // ← hyperv-winrm から promotion
-		"DeleteVhd",         // ← hyperv-winrm から promotion
+		"CreateOrUpdateVhd", // ← 本パッケージで定義 (シャドウイング、Phase B-X.3)
+		"DeleteVhd",         // ← 本パッケージで定義 (シャドウイング、Phase B-X.4)
 	} {
 		if _, ok := cType.MethodByName(methodName); !ok {
 			t.Errorf("ClientConfig should expose method %s (via shadow or promotion)", methodName)
@@ -112,6 +111,57 @@ func TestClientConfig_CreateOrUpdateVhd_DefinedInWsmanPackage(t *testing.T) {
 	}
 	if method.Type.NumOut() != 1 { // error
 		t.Errorf("CreateOrUpdateVhd signature mismatch: NumOut=%d, want 1", method.Type.NumOut())
+	}
+}
+
+// TestClientConfig_DeleteVhd_DefinedInWsmanPackage は DeleteVhd が
+// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する (Phase B-X.4)。
+//
+// これにより hyperv_winrm.ClientConfig.DeleteVhd (PowerShell template engine 版) ではなく、
+// 本パッケージの薄ラッパー実装 (案D: winrm-helper.RemoveFilesByPrefix 経由) が呼ばれる。
+func TestClientConfig_DeleteVhd_DefinedInWsmanPackage(t *testing.T) {
+	cType := reflect.TypeOf((*ClientConfig)(nil))
+	method, ok := cType.MethodByName("DeleteVhd")
+	if !ok {
+		t.Fatal("ClientConfig should have DeleteVhd method")
+	}
+
+	// シグネチャ: (c *ClientConfig).DeleteVhd(ctx, path) error
+	if method.Type.NumIn() != 3 { // receiver + ctx + path
+		t.Errorf("DeleteVhd signature mismatch: NumIn=%d, want 3", method.Type.NumIn())
+	}
+	if method.Type.NumOut() != 1 { // error
+		t.Errorf("DeleteVhd signature mismatch: NumOut=%d, want 1", method.Type.NumOut())
+	}
+}
+
+// TestVhdDeletePrefix は VHD パスから「削除対象ディレクトリ + prefix」への分解を検証する。
+//
+// PowerShell 版 (hyperv_winrm.deleteVhdTemplate) の targetName 抽出 (= 末尾拡張子を
+// 除いたファイル名) を再現する。prefix を誤ると差分ディスクの削除漏れ / 意図しない
+// ファイル削除につながるため、データ変換ロジックとして必須テスト対象。
+func TestVhdDeletePrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantDir    string
+		wantPrefix string
+	}{
+		{"標準 vhdx", `C:\vms\disk.vhdx`, `C:\vms`, `disk`},
+		{"複数ドット (末尾拡張子のみ除去)", `C:\vms\my.disk.vhdx`, `C:\vms`, `my.disk`},
+		{"ディレクトリなし", `disk.vhdx`, ``, `disk`},
+		{"拡張子なし", `C:\vms\disk`, `C:\vms`, `disk`},
+		{"スラッシュ区切り", `C:/vms/disk.vhdx`, `C:/vms`, `disk`},
+		{"avhdx (差分ディスク)", `D:\hv\base.avhdx`, `D:\hv`, `base`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotDir, gotPrefix := vhdDeletePrefix(tt.path)
+			if gotDir != tt.wantDir || gotPrefix != tt.wantPrefix {
+				t.Errorf("vhdDeletePrefix(%q) = (%q, %q), want (%q, %q)",
+					tt.path, gotDir, gotPrefix, tt.wantDir, tt.wantPrefix)
+			}
+		})
 	}
 }
 

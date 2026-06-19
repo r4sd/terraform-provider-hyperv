@@ -10,8 +10,8 @@ import (
 )
 
 // TestClientConfig_ImplementsHypervVmClient は ClientConfig が api.HypervVmClient を
-// 実装することを検証する。VmExists / GetVm は本パッケージで定義 (シャドウイング)、
-// CreateVm / UpdateVm / DeleteVm は hyperv-winrm から promotion される。
+// 実装することを検証する。VmExists / GetVm / DeleteVm は本パッケージで定義 (シャドウイング)、
+// CreateVm / UpdateVm は hyperv-winrm から promotion される。
 func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmClient = c // コンパイル時チェック
@@ -22,7 +22,7 @@ func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 		"GetVm",    // ← 本パッケージで定義 (シャドウイング、C-1.1)
 		"CreateVm", // ← promotion (C-1.2 で移行予定)
 		"UpdateVm", // ← promotion (C-1.3 で移行予定)
-		"DeleteVm", // ← promotion (C-1.4 で移行予定)
+		"DeleteVm", // ← 本パッケージで定義 (シャドウイング、C-1.4)
 	} {
 		if _, ok := cType.MethodByName(methodName); !ok {
 			t.Errorf("ClientConfig should expose method %s (via shadow or promotion)", methodName)
@@ -149,5 +149,41 @@ func TestVmFromSettingData(t *testing.T) {
 	}
 	if got.SmartPagingFilePath != `C:\vms\swap` {
 		t.Errorf("SmartPagingFilePath = %q", got.SmartPagingFilePath)
+	}
+}
+
+// TestDeleteVm_DefinedInWsmanPackage は DeleteVm が本パッケージで定義されている
+// (= シャドウイングが効き、PowerShell 版を置き換える) ことをシグネチャで確認する。
+func TestDeleteVm_DefinedInWsmanPackage(t *testing.T) {
+	cType := reflect.TypeOf((*ClientConfig)(nil))
+	method, ok := cType.MethodByName("DeleteVm")
+	if !ok {
+		t.Fatal("ClientConfig should have DeleteVm method")
+	}
+	if method.Type.NumIn() != 3 { // receiver + ctx + name
+		t.Errorf("DeleteVm: NumIn = %d, want 3", method.Type.NumIn())
+	}
+}
+
+// TestNeedsTurnOff は EnabledState から「削除前に停止が必要か」の判定を検証する。
+//
+// DestroySystem は起動中 (= Off 以外) の VM では失敗するため、Off(3) 以外は
+// すべて停止が必要と判定する (Running/Paused/Saved/Unknown を一律カバー)。
+func TestNeedsTurnOff(t *testing.T) {
+	tests := []struct {
+		name  string
+		state uint16
+		want  bool
+	}{
+		{"Off は停止不要", hyperv.EnabledStateDisabled, false},
+		{"Running は停止必要", hyperv.EnabledStateEnabled, true},
+		{"Paused は停止必要", hyperv.EnabledStatePaused, true},
+		{"Saved は停止必要", hyperv.EnabledStateSaved, true},
+		{"Unknown は停止必要 (安全側)", hyperv.EnabledStateUnknown, true},
+	}
+	for _, tt := range tests {
+		if got := needsTurnOff(tt.state); got != tt.want {
+			t.Errorf("needsTurnOff(%d) [%s] = %v, want %v", tt.state, tt.name, got, tt.want)
+		}
 	}
 }

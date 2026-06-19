@@ -105,3 +105,45 @@ func clampUint32(v uint64) uint32 {
 	}
 	return uint32(v)
 }
+
+// DeleteVm は go-wsman 経由で VM (表示名) を削除する。
+//
+// 表示名→GUID を解決し、起動中なら強制電源断 (TurnOff) してから DestroySystem を呼ぶ。
+// DestroySystem は Off 状態の VM でしか成功しないため、停止を先行させる必要がある。
+// 非同期 Job はそれぞれ WaitForJob で完了を待つ。VM が存在しない場合は冪等に nil を返す
+// (PowerShell 版の `Get-VM | Remove-VM` が空パイプでエラーにならない挙動と揃える)。
+func (c *ClientConfig) DeleteVm(ctx context.Context, name string) error {
+	cs, err := c.WsmanClient.FindComputerSystemByElementName(ctx, name)
+	if err != nil {
+		if errors.Is(err, hyperv.ErrVMNotFound) {
+			return nil // 既に存在しない: 冪等に成功扱い
+		}
+		return fmt.Errorf("hyperv-wsman: DeleteVm %q: %w", name, err)
+	}
+	guid := cs.Name
+
+	if needsTurnOff(cs.EnabledState) {
+		jobRef, err := c.WsmanClient.TurnOffVM(ctx, guid)
+		if err != nil {
+			return fmt.Errorf("hyperv-wsman: DeleteVm %q: turn off: %w", name, err)
+		}
+		if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+			return fmt.Errorf("hyperv-wsman: DeleteVm %q: wait turn off: %w", name, err)
+		}
+	}
+
+	jobRef, err := c.WsmanClient.DestroySystem(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: DeleteVm %q: destroy: %w", name, err)
+	}
+	if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: DeleteVm %q: wait destroy: %w", name, err)
+	}
+	return nil
+}
+
+// needsTurnOff は EnabledState が「DestroySystem 前に停止が必要」な状態か判定する。
+// DestroySystem は Off 状態でしか成功しないため、Off(3) 以外は一律停止が必要とみなす。
+func needsTurnOff(state uint16) bool {
+	return state != hyperv.EnabledStateDisabled
+}

@@ -281,10 +281,13 @@ jobs:
         name: go mod download
         run: go mod download
         
-      - run: go get -d github.com/golangci/golangci-lint/cmd/golangci-lint
-      - run: go install github.com/golangci/golangci-lint/cmd/golangci-lint
-      - run: golangci-lint run
-        continue-on-error: true  # Fork contains pre-existing warnings
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        with:
+          install-mode: goinstall
+          version: latest
+        # Fork 由来の既存警告 (55 件) があるため当面は非ブロッキング。
+        continue-on-error: true
 
   # semgrep:
   #   # Disabled: requires SEMGREP_APP_TOKEN for semgrep ci

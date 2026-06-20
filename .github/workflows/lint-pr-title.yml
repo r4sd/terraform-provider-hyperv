@@ -6,9 +6,12 @@ on:
       - edited
       - synchronize
 
-# PR タイトルの読み取りのみ。pull_request_target なので最小権限に絞る。
+# PR タイトルの読み取り + WIP チェックのコミットステータス報告に必要な最小権限。
+# wip: true の場合、action は2つ目のチェックをコミットステータスとして報告するため
+# statuses: write が必須 (これが無いと "Resource not accessible by integration" で失敗)。
 permissions:
   pull-requests: read
+  statuses: write
 
 jobs:
   main:

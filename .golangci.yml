@@ -1,70 +1,64 @@
-issues:
-  exclude-rules:
-    - linters:
-        - gosimple
-      text: "S1039:"
-
-    # フォーク元コード・依存パッケージの非推奨API警告を抑制
-    - linters:
-        - staticcheck
-      text: "SA1019:"
-
-    - linters:
-        - unparam
-      text: "always receives"
-
-  max-per-linter: 0
-  max-same-issues: 0
-
+version: "2"
+run:
+  modules-download-mode: mod
 linters:
-  disable-all: true
+  default: none
   enable:
     - bodyclose
     - depguard
-    #- dogsled
-    #- dupl
     - errcheck
-    - exportloopref
-    #- funlen
-    #- gochecknoinits #needed for document generation
     - goconst
     - gocritic
-    #- gocyclo
-    - gofmt
-    - goimports
-    #- gomnd
     - goprintffuncname
     - gosec
-    - gosimple
     - govet
     - ineffassign
-    #- lll
     - misspell
     - nakedret
     - noctx
     - nolintlint
     - staticcheck
-    #- stylecheck
-    - typecheck
     - unconvert
     - unparam
     - unused
     - whitespace
-
-linters-settings:
-  errcheck:
-    ignore: github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema:ForceNew|Set,fmt:.*,io:Close
-  depguard:
+  settings:
+    depguard:
+      rules:
+        logger:
+          deny:
+            - pkg: github.com/sirupsen/logrus
+              desc: logging is allowed only by logutils.Log
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      logger:
-        deny:
-          # logging is allowed only by logutils.Log,
-          # logrus is allowed to use only in logutils package.
-          - pkg: "github.com/sirupsen/logrus"
-            desc: logging is allowed only by logutils.Log
-
-run:
-  modules-download-mode: mod
-  timeout: 10m
-
-skip-dirs-use-default: true
+      - linters:
+          - staticcheck
+        text: 'S1039:'
+      - linters:
+          - staticcheck
+        text: 'SA1019:'
+      - linters:
+          - unparam
+        text: always receives
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 0
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

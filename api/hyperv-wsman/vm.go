@@ -147,3 +147,199 @@ func (c *ClientConfig) DeleteVm(ctx context.Context, name string) error {
 func needsTurnOff(state uint16) bool {
 	return state != hyperv.EnabledStateDisabled
 }
+
+// CreateVm は go-wsman 経由で新規 VM を作成する。
+//
+// PowerShell 版 (New-VM + Set-VM 群) を CIM 化する。冪等性のため事前に存在確認し、
+// DefineSystem で VM-level 設定込みの VM を作成 → Memory/Processor をリソース設定として
+// 適用する。各非同期 Job は WaitForJob で完了を待つ。
+//
+// go-wsman の DefineSystem は「リソースを持たない VM」を作る (PowerShell New-VM のような
+// 自動 NIC/DVD は付かない想定)。parity 担保のため自動生成 NIC は防御的に削除する
+// (実際に生成されるかは Phase D 実機で確認)。
+//
+// 未適用 (GetVm と同じ理由で将来対応):
+//   - automaticStartDelay / automaticCriticalErrorActionTimeout: CIM Duration 文字列の
+//     エンコードが要る。実機書式を Phase D で確認後に対応。
+//   - checkpointType / automaticCheckpointsEnabled: v2.1 (#46) に延期。
+func (c *ClientConfig) CreateVm(
+	ctx context.Context,
+	name string,
+	path string,
+	generation int,
+	automaticCriticalErrorAction api.CriticalErrorAction,
+	automaticCriticalErrorActionTimeout int32,
+	automaticStartAction api.StartAction,
+	automaticStartDelay int32,
+	automaticStopAction api.StopAction,
+	checkpointType api.CheckpointType,
+	dynamicMemory bool,
+	guestControlledCacheTypes bool,
+	highMemoryMappedIoSpace uint64,
+	lockOnDisconnect api.OnOffState,
+	lowMemoryMappedIoSpace uint32,
+	memoryMaximumBytes int64,
+	memoryMinimumBytes int64,
+	memoryStartupBytes int64,
+	notes string,
+	processorCount int64,
+	smartPagingFilePath string,
+	snapshotFileLocation string,
+	staticMemory bool,
+	automaticCheckpointsEnabled bool,
+) error {
+	// 1. 冪等性: 既存なら作成しない (PowerShell 版の throw "VM already exists" 相当)。
+	if _, err := c.WsmanClient.FindComputerSystemByElementName(ctx, name); err == nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: VM already exists", name)
+	} else if !errors.Is(err, hyperv.ErrVMNotFound) {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: existence check: %w", name, err)
+	}
+
+	// 2. VM 本体を作成 (VM-level 設定込み)。
+	sd, err := vmSettingDataForCreate(name, path, generation,
+		automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
+		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect,
+		lowMemoryMappedIoSpace, notes, smartPagingFilePath, snapshotFileLocation)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: %w", name, err)
+	}
+	res, err := c.WsmanClient.DefineSystem(ctx, sd)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: define: %w", name, err)
+	}
+	if err := c.WsmanClient.WaitForJob(ctx, res.JobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: wait define: %w", name, err)
+	}
+	guid := res.ResultingSystem // Msvm_ComputerSystem.Name (以降のリソース操作は GUID で引く)
+
+	// 3. 自動生成 NIC があれば削除 (残すと後続 NIC Phase で state ドリフトする)。
+	adapters, err := c.WsmanClient.ListNetworkAdapters(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: list adapters: %w", name, err)
+	}
+	for _, a := range adapters {
+		jobRef, err := c.WsmanClient.RemoveNetworkAdapter(ctx, a.InstanceID)
+		if err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateVm %q: remove adapter: %w", name, err)
+		}
+		if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateVm %q: wait remove adapter: %w", name, err)
+		}
+	}
+
+	// 4. Memory: 既定設定を取得して上書き適用 (CIM は MB 単位)。
+	mem, err := c.WsmanClient.GetMemorySettings(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: get memory: %w", name, err)
+	}
+	applyMemorySettings(mem, staticMemory, dynamicMemory, memoryStartupBytes, memoryMinimumBytes, memoryMaximumBytes)
+	if jobRef, err := c.WsmanClient.SetMemorySettings(ctx, mem); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: set memory: %w", name, err)
+	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: wait memory: %w", name, err)
+	}
+
+	// 5. Processor: vCPU 数を設定。
+	proc, err := c.WsmanClient.GetProcessorSettings(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: get processor: %w", name, err)
+	}
+	if processorCount > 0 {
+		proc.VirtualQuantity = uint64(processorCount)
+	}
+	if jobRef, err := c.WsmanClient.SetProcessorSettings(ctx, proc); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: set processor: %w", name, err)
+	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: wait processor: %w", name, err)
+	}
+
+	return nil
+}
+
+// vmSubTypeFromGeneration は Generation 番号を CIM VirtualSystemSubType に変換する。
+func vmSubTypeFromGeneration(generation int) (string, error) {
+	switch generation {
+	case 1:
+		return hyperv.VirtualSystemSubTypeGen1, nil
+	case 2:
+		return hyperv.VirtualSystemSubTypeGen2, nil
+	default:
+		return "", fmt.Errorf("unsupported generation %d (1 か 2)", generation)
+	}
+}
+
+// enumToUint16 は provider enum (int) を CIM uint16 に安全変換する。
+// 範囲外は 0 (既定 = None/Nothing) に倒す。enum 値は 0-4 想定だが、直接 uint16() すると
+// gosec G115 が桁あふれ変換として検出するため (clampUint32 と同趣旨)。
+func enumToUint16(v int) uint16 {
+	if v < 0 || v > math.MaxUint16 {
+		return 0
+	}
+	return uint16(v)
+}
+
+// bytesToMB はバイトを MB に変換する (CIM の Memory/MMIO は MB 単位)。負値・端数は切り捨て。
+func bytesToMB(b int64) uint64 {
+	if b <= 0 {
+		return 0
+	}
+	return uint64(b) / (1024 * 1024)
+}
+
+// applyMemorySettings は static/dynamic に応じて Msvm_MemorySettingData を上書きする。
+//
+// VirtualQuantity は起動時メモリ(MB)。static は固定メモリ (Min/Max 無視)、dynamic は
+// Reservation=最小 / Limit=最大 を設定する。PowerShell 版の StaticMemory/DynamicMemory
+// 排他ロジックに対応。
+func applyMemorySettings(m *hyperv.Msvm_MemorySettingData, staticMemory, dynamicMemory bool, startupBytes, minBytes, maxBytes int64) {
+	m.VirtualQuantity = bytesToMB(startupBytes)
+	if staticMemory {
+		m.DynamicMemoryEnabled = false
+		return
+	}
+	m.DynamicMemoryEnabled = dynamicMemory
+	if dynamicMemory {
+		m.Reservation = bytesToMB(minBytes)
+		m.Limit = bytesToMB(maxBytes)
+	}
+}
+
+// vmSettingDataForCreate は CreateVm パラメータから DefineSystem 用の
+// Msvm_VirtualSystemSettingData を構築する (GetVm の vmFromSettingData の逆方向)。
+//
+// enum は provider 整数値が CIM 値と一致するため直接変換する (GetVm と同じ前提、MOF 突合済み)。
+// ゼロ値フィールドは marshalEmbeddedInstance が省略し CIM 既定になる。
+func vmSettingDataForCreate(
+	name, path string, generation int,
+	criticalErrorAction api.CriticalErrorAction,
+	startAction api.StartAction,
+	stopAction api.StopAction,
+	guestControlledCacheTypes bool,
+	highMmioGapSize uint64,
+	lockOnDisconnect api.OnOffState,
+	lowMmioGapSize uint32,
+	notes, smartPagingFilePath, snapshotFileLocation string,
+) (*hyperv.Msvm_VirtualSystemSettingData, error) {
+	subType, err := vmSubTypeFromGeneration(generation)
+	if err != nil {
+		return nil, err
+	}
+	sd := &hyperv.Msvm_VirtualSystemSettingData{
+		ElementName:                  name,
+		VirtualSystemSubType:         subType,
+		ConfigurationDataRoot:        path,
+		SnapshotDataRoot:             snapshotFileLocation,
+		SwapFileDataRoot:             smartPagingFilePath,
+		AutomaticStartupAction:       enumToUint16(int(startAction)),
+		AutomaticShutdownAction:      enumToUint16(int(stopAction)),
+		AutomaticCriticalErrorAction: enumToUint16(int(criticalErrorAction)),
+		LockOnDisconnect:             lockOnDisconnect == api.OnOffState_On,
+		GuestControlledCacheTypes:    guestControlledCacheTypes,
+		HighMmioGapSize:              highMmioGapSize,
+		LowMmioGapSize:               uint64(lowMmioGapSize),
+	}
+	if notes != "" {
+		sd.Notes = strings.Split(notes, "\n")
+	}
+	return sd, nil
+}

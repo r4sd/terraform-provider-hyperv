@@ -10,8 +10,8 @@ import (
 )
 
 // TestClientConfig_ImplementsHypervVmClient は ClientConfig が api.HypervVmClient を
-// 実装することを検証する。VmExists / GetVm / DeleteVm は本パッケージで定義 (シャドウイング)、
-// CreateVm / UpdateVm は hyperv-winrm から promotion される。
+// 実装することを検証する。Phase C-1 完了後は VM CRUD 全メソッドが本パッケージで定義
+// (シャドウイング) され、PowerShell 版を置き換える。
 func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmClient = c // コンパイル時チェック
@@ -21,7 +21,7 @@ func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 		"VmExists", // ← 本パッケージで定義 (シャドウイング、C-1.1)
 		"GetVm",    // ← 本パッケージで定義 (シャドウイング、C-1.1)
 		"CreateVm", // ← 本パッケージで定義 (シャドウイング、C-1.2)
-		"UpdateVm", // ← promotion (C-1.3 で移行予定)
+		"UpdateVm", // ← 本パッケージで定義 (シャドウイング、C-1.3)
 		"DeleteVm", // ← 本パッケージで定義 (シャドウイング、C-1.4)
 	} {
 		if _, ok := cType.MethodByName(methodName); !ok {
@@ -350,5 +350,57 @@ func TestVmSettingDataForCreate(t *testing.T) {
 
 	if _, err := vmSettingDataForCreate("x", "", 9, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", ""); err == nil {
 		t.Error("generation=9 はエラーになるべき")
+	}
+}
+
+// TestUpdateVm_DefinedInWsmanPackage は UpdateVm が本パッケージで定義されている
+// (= シャドウイングが効き、PowerShell 版を置き換える) ことを確認する。
+func TestUpdateVm_DefinedInWsmanPackage(t *testing.T) {
+	cType := reflect.TypeOf((*ClientConfig)(nil))
+	if _, ok := cType.MethodByName("UpdateVm"); !ok {
+		t.Fatal("ClientConfig should have UpdateVm method")
+	}
+}
+
+// TestApplyVmLevelSettings は VM レベル可変フィールドの適用 (Create/Update 共有) を検証する。
+//
+// 既存 settings の InstanceID / SubType は保持し、可変フィールドのみ上書きすること。
+// 空文字のパスは「変更なし」として既存値を維持する (CIM ModifySystemSettings の慣習)。
+func TestApplyVmLevelSettings(t *testing.T) {
+	const existingSnap = `C:\existing\snap`
+	sd := &hyperv.Msvm_VirtualSystemSettingData{
+		InstanceID:           "keep-me",
+		VirtualSystemSubType: hyperv.VirtualSystemSubTypeGen2,
+		SnapshotDataRoot:     existingSnap,
+	}
+	applyVmLevelSettings(sd,
+		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
+		true, 256, api.OnOffState_On, 64,
+		"n1\nn2", `C:\new\paging`, "") // snapshot="" → 既存維持
+
+	if sd.InstanceID != "keep-me" {
+		t.Errorf("InstanceID は保持されるべき: %q", sd.InstanceID)
+	}
+	if sd.VirtualSystemSubType != hyperv.VirtualSystemSubTypeGen2 {
+		t.Errorf("VirtualSystemSubType は保持されるべき: %q", sd.VirtualSystemSubType)
+	}
+	if sd.AutomaticStartupAction != 4 || sd.AutomaticShutdownAction != 3 || sd.AutomaticCriticalErrorAction != 1 {
+		t.Errorf("enum 適用ミス: start=%d stop=%d crit=%d",
+			sd.AutomaticStartupAction, sd.AutomaticShutdownAction, sd.AutomaticCriticalErrorAction)
+	}
+	if !sd.LockOnDisconnect || !sd.GuestControlledCacheTypes {
+		t.Error("bool フィールド適用ミス")
+	}
+	if sd.HighMmioGapSize != 256 || sd.LowMmioGapSize != 64 {
+		t.Errorf("MMIO 適用ミス: high=%d low=%d", sd.HighMmioGapSize, sd.LowMmioGapSize)
+	}
+	if sd.SwapFileDataRoot != `C:\new\paging` {
+		t.Errorf("SwapFileDataRoot=%q", sd.SwapFileDataRoot)
+	}
+	if sd.SnapshotDataRoot != existingSnap {
+		t.Errorf("snapshot 空文字なら既存維持のはず: %q", sd.SnapshotDataRoot)
+	}
+	if len(sd.Notes) != 2 || sd.Notes[0] != "n1" || sd.Notes[1] != "n2" {
+		t.Errorf("Notes=%v, want [n1 n2]", sd.Notes)
 	}
 }

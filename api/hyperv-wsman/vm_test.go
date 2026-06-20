@@ -20,7 +20,7 @@ func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 	for _, methodName := range []string{
 		"VmExists", // ← 本パッケージで定義 (シャドウイング、C-1.1)
 		"GetVm",    // ← 本パッケージで定義 (シャドウイング、C-1.1)
-		"CreateVm", // ← promotion (C-1.2 で移行予定)
+		"CreateVm", // ← 本パッケージで定義 (シャドウイング、C-1.2)
 		"UpdateVm", // ← promotion (C-1.3 で移行予定)
 		"DeleteVm", // ← 本パッケージで定義 (シャドウイング、C-1.4)
 	} {
@@ -185,5 +185,170 @@ func TestNeedsTurnOff(t *testing.T) {
 		if got := needsTurnOff(tt.state); got != tt.want {
 			t.Errorf("needsTurnOff(%d) [%s] = %v, want %v", tt.state, tt.name, got, tt.want)
 		}
+	}
+}
+
+// TestCreateVm_DefinedInWsmanPackage は CreateVm が本パッケージで定義されている
+// (= シャドウイングが効き、PowerShell 版を置き換える) ことを確認する。
+func TestCreateVm_DefinedInWsmanPackage(t *testing.T) {
+	cType := reflect.TypeOf((*ClientConfig)(nil))
+	if _, ok := cType.MethodByName("CreateVm"); !ok {
+		t.Fatal("ClientConfig should have CreateVm method")
+	}
+}
+
+// TestVmSubTypeFromGeneration は Generation 番号 → CIM VirtualSystemSubType 変換を検証する。
+func TestVmSubTypeFromGeneration(t *testing.T) {
+	tests := []struct {
+		gen     int
+		want    string
+		wantErr bool
+	}{
+		{1, hyperv.VirtualSystemSubTypeGen1, false},
+		{2, hyperv.VirtualSystemSubTypeGen2, false},
+		{0, "", true},
+		{3, "", true},
+	}
+	for _, tt := range tests {
+		got, err := vmSubTypeFromGeneration(tt.gen)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("vmSubTypeFromGeneration(%d) err=%v, wantErr=%v", tt.gen, err, tt.wantErr)
+		}
+		if got != tt.want {
+			t.Errorf("vmSubTypeFromGeneration(%d)=%q, want %q", tt.gen, got, tt.want)
+		}
+	}
+}
+
+// TestEnumToUint16 は provider enum(int)→CIM uint16 の安全変換を検証する。
+func TestEnumToUint16(t *testing.T) {
+	tests := []struct {
+		in   int
+		want uint16
+	}{
+		{0, 0},
+		{4, 4},
+		{-1, 0}, // 負値は 0
+		{math.MaxUint16, math.MaxUint16},
+		{math.MaxUint16 + 1, 0}, // 範囲外は 0
+	}
+	for _, tt := range tests {
+		if got := enumToUint16(tt.in); got != tt.want {
+			t.Errorf("enumToUint16(%d)=%d, want %d", tt.in, got, tt.want)
+		}
+	}
+}
+
+// TestBytesToMB は バイト→MB 変換 (CIM Memory/MMIO は MB 単位) を検証する。
+func TestBytesToMB(t *testing.T) {
+	tests := []struct {
+		bytes int64
+		want  uint64
+	}{
+		{0, 0},
+		{1048576, 1},       // 1 MiB
+		{2147483648, 2048}, // 2 GiB
+		{1048575, 0},       // 1 MiB 未満は切り捨て
+		{-1, 0},            // 負値は 0
+	}
+	for _, tt := range tests {
+		if got := bytesToMB(tt.bytes); got != tt.want {
+			t.Errorf("bytesToMB(%d)=%d, want %d", tt.bytes, got, tt.want)
+		}
+	}
+}
+
+// TestApplyMemorySettings は static/dynamic メモリ設定の適用を検証する。
+func TestApplyMemorySettings(t *testing.T) {
+	t.Run("static は固定メモリ・Min/Max無視", func(t *testing.T) {
+		m := &hyperv.Msvm_MemorySettingData{InstanceID: "x"}
+		applyMemorySettings(m, true, false, 2147483648, 1073741824, 4294967296)
+		if m.DynamicMemoryEnabled {
+			t.Error("static: DynamicMemoryEnabled は false であるべき")
+		}
+		if m.VirtualQuantity != 2048 {
+			t.Errorf("static: VirtualQuantity=%d, want 2048", m.VirtualQuantity)
+		}
+		if m.Reservation != 0 || m.Limit != 0 {
+			t.Errorf("static: Min/Max は未設定であるべき (Reservation=%d Limit=%d)", m.Reservation, m.Limit)
+		}
+	})
+	t.Run("dynamic は Reservation=Min / Limit=Max", func(t *testing.T) {
+		m := &hyperv.Msvm_MemorySettingData{InstanceID: "x"}
+		applyMemorySettings(m, false, true, 2147483648, 1073741824, 4294967296)
+		if !m.DynamicMemoryEnabled {
+			t.Error("dynamic: DynamicMemoryEnabled は true であるべき")
+		}
+		if m.VirtualQuantity != 2048 {
+			t.Errorf("dynamic: VirtualQuantity=%d, want 2048", m.VirtualQuantity)
+		}
+		if m.Reservation != 1024 {
+			t.Errorf("dynamic: Reservation=%d, want 1024", m.Reservation)
+		}
+		if m.Limit != 4096 {
+			t.Errorf("dynamic: Limit=%d, want 4096", m.Limit)
+		}
+	})
+}
+
+// TestVmSettingDataForCreate は CreateVm パラメータ → Msvm_VirtualSystemSettingData
+// マッピング (GetVm の vmFromSettingData の逆) を検証する。
+func TestVmSettingDataForCreate(t *testing.T) {
+	const (
+		cfgPath  = `C:\hyperv\create-test`
+		pagePath = `C:\hyperv\paging`
+		snapPath = `C:\hyperv\snap`
+	)
+	sd, err := vmSettingDataForCreate(
+		"vm1", cfgPath, 2,
+		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
+		true, 512, api.OnOffState_On, 128,
+		"note1\nnote2", pagePath, snapPath,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if sd.ElementName != "vm1" {
+		t.Errorf("ElementName=%q", sd.ElementName)
+	}
+	if sd.VirtualSystemSubType != hyperv.VirtualSystemSubTypeGen2 {
+		t.Errorf("VirtualSystemSubType=%q", sd.VirtualSystemSubType)
+	}
+	if sd.ConfigurationDataRoot != cfgPath {
+		t.Errorf("ConfigurationDataRoot=%q", sd.ConfigurationDataRoot)
+	}
+	if sd.AutomaticCriticalErrorAction != 1 { // Pause
+		t.Errorf("AutomaticCriticalErrorAction=%d, want 1", sd.AutomaticCriticalErrorAction)
+	}
+	if sd.AutomaticStartupAction != 4 { // Start
+		t.Errorf("AutomaticStartupAction=%d, want 4", sd.AutomaticStartupAction)
+	}
+	if sd.AutomaticShutdownAction != 3 { // Save
+		t.Errorf("AutomaticShutdownAction=%d, want 3", sd.AutomaticShutdownAction)
+	}
+	if !sd.LockOnDisconnect {
+		t.Error("LockOnDisconnect は true であるべき")
+	}
+	if !sd.GuestControlledCacheTypes {
+		t.Error("GuestControlledCacheTypes は true であるべき")
+	}
+	if sd.HighMmioGapSize != 512 {
+		t.Errorf("HighMmioGapSize=%d, want 512", sd.HighMmioGapSize)
+	}
+	if sd.LowMmioGapSize != 128 {
+		t.Errorf("LowMmioGapSize=%d, want 128", sd.LowMmioGapSize)
+	}
+	if sd.SnapshotDataRoot != snapPath {
+		t.Errorf("SnapshotDataRoot=%q", sd.SnapshotDataRoot)
+	}
+	if sd.SwapFileDataRoot != pagePath {
+		t.Errorf("SwapFileDataRoot=%q", sd.SwapFileDataRoot)
+	}
+	if len(sd.Notes) != 2 || sd.Notes[0] != "note1" || sd.Notes[1] != "note2" {
+		t.Errorf("Notes=%v, want [note1 note2]", sd.Notes)
+	}
+
+	if _, err := vmSettingDataForCreate("x", "", 9, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", ""); err == nil {
+		t.Error("generation=9 はエラーになるべき")
 	}
 }

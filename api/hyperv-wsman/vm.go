@@ -256,6 +256,91 @@ func (c *ClientConfig) CreateVm(
 	return nil
 }
 
+// UpdateVm は go-wsman 経由で既存 VM の構成を更新する。
+//
+// 現構成を取得 → VM レベルの可変フィールドを書き換え → ModifySystemSettings (go-wsman の
+// UpdateVm) で反映 → Memory/Processor をリソース設定として更新する。各非同期 Job は
+// WaitForJob で待つ。path/generation は作成後に変更できないため対象外 (api 契約でも除外)。
+//
+// CIM の ModifySystemSettings はゼロ値フィールドを「変更なし」とみなすため、各フィールドは
+// 新しい値で上書きする (CreateVm と enum/メモリ変換ロジックを共有)。
+//
+// 未適用 (GetVm/CreateVm と同じ理由): automaticStartDelay /
+// automaticCriticalErrorActionTimeout (CIM Duration、Phase D) / checkpointType /
+// automaticCheckpointsEnabled (v2.1)。
+func (c *ClientConfig) UpdateVm(
+	ctx context.Context,
+	name string,
+	automaticCriticalErrorAction api.CriticalErrorAction,
+	automaticCriticalErrorActionTimeout int32,
+	automaticStartAction api.StartAction,
+	automaticStartDelay int32,
+	automaticStopAction api.StopAction,
+	checkpointType api.CheckpointType,
+	dynamicMemory bool,
+	guestControlledCacheTypes bool,
+	highMemoryMappedIoSpace uint64,
+	lockOnDisconnect api.OnOffState,
+	lowMemoryMappedIoSpace uint32,
+	memoryMaximumBytes int64,
+	memoryMinimumBytes int64,
+	memoryStartupBytes int64,
+	notes string,
+	processorCount int64,
+	smartPagingFilePath string,
+	snapshotFileLocation string,
+	staticMemory bool,
+	automaticCheckpointsEnabled bool,
+) error {
+	cs, err := c.WsmanClient.FindComputerSystemByElementName(ctx, name)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
+	}
+	guid := cs.Name
+
+	// 1. VM-level 設定: 現構成を取得 → 書き換え → ModifySystemSettings。
+	sd, err := c.WsmanClient.GetSystemSettingData(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get settings: %w", name, err)
+	}
+	applyVmLevelSettings(sd, automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
+		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace,
+		notes, smartPagingFilePath, snapshotFileLocation)
+	if jobRef, err := c.WsmanClient.UpdateVm(ctx, sd); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: modify settings: %w", name, err)
+	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: wait modify: %w", name, err)
+	}
+
+	// 2. Memory。
+	mem, err := c.WsmanClient.GetMemorySettings(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get memory: %w", name, err)
+	}
+	applyMemorySettings(mem, staticMemory, dynamicMemory, memoryStartupBytes, memoryMinimumBytes, memoryMaximumBytes)
+	if jobRef, err := c.WsmanClient.SetMemorySettings(ctx, mem); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: set memory: %w", name, err)
+	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: wait memory: %w", name, err)
+	}
+
+	// 3. Processor。
+	proc, err := c.WsmanClient.GetProcessorSettings(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get processor: %w", name, err)
+	}
+	if processorCount > 0 {
+		proc.VirtualQuantity = uint64(processorCount)
+	}
+	if jobRef, err := c.WsmanClient.SetProcessorSettings(ctx, proc); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: set processor: %w", name, err)
+	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: wait processor: %w", name, err)
+	}
+
+	return nil
+}
+
 // vmSubTypeFromGeneration は Generation 番号を CIM VirtualSystemSubType に変換する。
 func vmSubTypeFromGeneration(generation int) (string, error) {
 	switch generation {
@@ -325,21 +410,46 @@ func vmSettingDataForCreate(
 		return nil, err
 	}
 	sd := &hyperv.Msvm_VirtualSystemSettingData{
-		ElementName:                  name,
-		VirtualSystemSubType:         subType,
-		ConfigurationDataRoot:        path,
-		SnapshotDataRoot:             snapshotFileLocation,
-		SwapFileDataRoot:             smartPagingFilePath,
-		AutomaticStartupAction:       enumToUint16(int(startAction)),
-		AutomaticShutdownAction:      enumToUint16(int(stopAction)),
-		AutomaticCriticalErrorAction: enumToUint16(int(criticalErrorAction)),
-		LockOnDisconnect:             lockOnDisconnect == api.OnOffState_On,
-		GuestControlledCacheTypes:    guestControlledCacheTypes,
-		HighMmioGapSize:              highMmioGapSize,
-		LowMmioGapSize:               uint64(lowMmioGapSize),
+		ElementName:           name,
+		VirtualSystemSubType:  subType,
+		ConfigurationDataRoot: path,
+	}
+	applyVmLevelSettings(sd, criticalErrorAction, startAction, stopAction,
+		guestControlledCacheTypes, highMmioGapSize, lockOnDisconnect, lowMmioGapSize,
+		notes, smartPagingFilePath, snapshotFileLocation)
+	return sd, nil
+}
+
+// applyVmLevelSettings は VM レベルの可変フィールドを settings に適用する (Create/Update 共有)。
+//
+// enum は provider 整数値 = CIM 値 (GetVm/CreateVm と同前提)。空文字のパスと未指定のゼロ値は
+// marshalEmbeddedInstance が省略するため、Update (ModifySystemSettings) では「未指定=変更なし」
+// になる (CIM SettingData の慣習)。InstanceID 等の既存値は呼び出し側が保持する。
+func applyVmLevelSettings(
+	sd *hyperv.Msvm_VirtualSystemSettingData,
+	criticalErrorAction api.CriticalErrorAction,
+	startAction api.StartAction,
+	stopAction api.StopAction,
+	guestControlledCacheTypes bool,
+	highMmioGapSize uint64,
+	lockOnDisconnect api.OnOffState,
+	lowMmioGapSize uint32,
+	notes, smartPagingFilePath, snapshotFileLocation string,
+) {
+	sd.AutomaticStartupAction = enumToUint16(int(startAction))
+	sd.AutomaticShutdownAction = enumToUint16(int(stopAction))
+	sd.AutomaticCriticalErrorAction = enumToUint16(int(criticalErrorAction))
+	sd.LockOnDisconnect = lockOnDisconnect == api.OnOffState_On
+	sd.GuestControlledCacheTypes = guestControlledCacheTypes
+	sd.HighMmioGapSize = highMmioGapSize
+	sd.LowMmioGapSize = uint64(lowMmioGapSize)
+	if snapshotFileLocation != "" {
+		sd.SnapshotDataRoot = snapshotFileLocation
+	}
+	if smartPagingFilePath != "" {
+		sd.SwapFileDataRoot = smartPagingFilePath
 	}
 	if notes != "" {
 		sd.Notes = strings.Split(notes, "\n")
 	}
-	return sd, nil
 }

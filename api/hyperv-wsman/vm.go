@@ -298,11 +298,15 @@ func (c *ClientConfig) UpdateVm(
 	}
 	guid := cs.Name
 
-	// 1. VM-level 設定: 現構成を取得 → 書き換え → ModifySystemSettings。
-	sd, err := c.WsmanClient.GetSystemSettingData(ctx, guid)
+	// 1. VM-level 設定: InstanceID を取得し、変更フィールドのみの最小 instance を
+	//    ModifySystemSettings に渡す。GetSystemSettingData の全体を送り返すと read-only
+	//    プロパティ (VirtualSystemType=Realized / CreationTime / BIOSGUID 等) でジョブが
+	//    Exception になるため (実機 acc test で確認、libvirt 実証の最小 instance パターン)。
+	cur, err := c.WsmanClient.GetSystemSettingData(ctx, guid)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get settings: %w", name, err)
 	}
+	sd := &hyperv.Msvm_VirtualSystemSettingData{InstanceID: cur.InstanceID}
 	applyVmLevelSettings(sd, automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
 		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace,
 		notes, smartPagingFilePath, snapshotFileLocation)

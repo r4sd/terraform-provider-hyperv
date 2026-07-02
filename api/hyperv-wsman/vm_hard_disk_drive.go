@@ -100,6 +100,13 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
 	}
+	// go-wsman で作った VM はシェル状態で SCSI Controller を持たない (#88) ため、SCSI
+	// アタッチ前に対象 Controller の存在を保証する。IDE は Gen1 に既定で存在するので対象外。
+	if controllerType == api.ControllerType_Scsi {
+		if err := c.ensureScsiController(ctx, vmName, controllerNumber); err != nil {
+			return err
+		}
+	}
 	_, err = c.WsmanClient.AttachVHD(ctx, vmName, hyperv.AttachVHDOptions{
 		ControllerType:     wsmanCT,
 		ControllerNumber:   int(controllerNumber),
@@ -108,6 +115,37 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 	})
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
+	}
+	return nil
+}
+
+// ensureScsiController は controllerNumber 番目の SCSI Controller が存在することを保証する。
+//
+// go-wsman の DefineSystem はシェル VM を作り SCSI Controller を持たない (#88) ため、必要数に
+// 満たなければ AddScsiController で追加する。追加のたびに再列挙して件数を確認する (無限ループ防止)。
+func (c *ClientConfig) ensureScsiController(ctx context.Context, vmName string, controllerNumber int32) error {
+	controllers, err := c.WsmanClient.ListSCSIControllers(ctx, vmName)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: ensure SCSI controller %q: %w", vmName, err)
+	}
+	for int32(len(controllers)) <= controllerNumber {
+		res, err := c.WsmanClient.AddScsiController(ctx, vmName)
+		if err != nil {
+			return fmt.Errorf("hyperv-wsman: add SCSI controller %q: %w", vmName, err)
+		}
+		if res.JobRef != "" {
+			if err := c.WsmanClient.WaitForJob(ctx, res.JobRef); err != nil {
+				return fmt.Errorf("hyperv-wsman: wait add SCSI controller %q: %w", vmName, err)
+			}
+		}
+		next, err := c.WsmanClient.ListSCSIControllers(ctx, vmName)
+		if err != nil {
+			return fmt.Errorf("hyperv-wsman: ensure SCSI controller %q: %w", vmName, err)
+		}
+		if len(next) <= len(controllers) {
+			return fmt.Errorf("hyperv-wsman: add SCSI controller %q: 追加後も件数が増えない (%d)", vmName, len(next))
+		}
+		controllers = next
 	}
 	return nil
 }

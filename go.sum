@@ -207,6 +207,8 @@ github.com/r4sd/go-wsman v0.0.0-20260630124222-379bdb77fc8c h1:GdrRwRFq4/8AQiuF7
 github.com/r4sd/go-wsman v0.0.0-20260630124222-379bdb77fc8c/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
 github.com/r4sd/go-wsman v0.0.0-20260702141519-c812d6a7d9c8 h1:7NfnE6cyUwNMODcVOls5KP1OrPKwYwusSi+HnGAIOmY=
 github.com/r4sd/go-wsman v0.0.0-20260702141519-c812d6a7d9c8/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
+github.com/r4sd/go-wsman v0.0.0-20260702160816-f2d010b75268 h1:eWXrb6+Qa1WsK/q4pMjdR3IXqPHrjzJ776ntaLP+Pzg=
+github.com/r4sd/go-wsman v0.0.0-20260702160816-f2d010b75268/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
 github.com/rogpeppe/go-internal v1.12.0 h1:exVL4IDcn6na9z1rAb56Vxr+CgyK3nn3O+epU5NdKM8=
 github.com/rogpeppe/go-internal v1.12.0/go.mod h1:E+RYuTGaKKdloAfM02xzb0FW3Paa99yedzYV+kq4uf4=
 github.com/russross/blackfriday v1.6.0 h1:KqfZb0pUVN2lYqZUYRddxF4OR8ZMURnJIG5Y3VRLtww=

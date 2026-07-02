@@ -203,12 +203,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/posener/complete v1.2.3 h1:NP0eAhjcjImqslEwo/1hq7gpajME0fTLTezBKDqfXqo=
 github.com/posener/complete v1.2.3/go.mod h1:WZIdtGGp+qx0sLrYKtIRAruyNpv6hFCicSgv7Sy7s/s=
-github.com/r4sd/go-wsman v0.0.0-20260630124222-379bdb77fc8c h1:GdrRwRFq4/8AQiuF7PY5UfUPCzH+nB11BITQsaAGCAI=
-github.com/r4sd/go-wsman v0.0.0-20260630124222-379bdb77fc8c/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
-github.com/r4sd/go-wsman v0.0.0-20260702141519-c812d6a7d9c8 h1:7NfnE6cyUwNMODcVOls5KP1OrPKwYwusSi+HnGAIOmY=
-github.com/r4sd/go-wsman v0.0.0-20260702141519-c812d6a7d9c8/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
-github.com/r4sd/go-wsman v0.0.0-20260702160816-f2d010b75268 h1:eWXrb6+Qa1WsK/q4pMjdR3IXqPHrjzJ776ntaLP+Pzg=
-github.com/r4sd/go-wsman v0.0.0-20260702160816-f2d010b75268/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
+github.com/r4sd/go-wsman v0.0.0-20260702162944-a2768466f9be h1:yB0L2p/msBWFsJC0cIgnC3Rwnexf4kdw/WDZD/NJrfY=
+github.com/r4sd/go-wsman v0.0.0-20260702162944-a2768466f9be/go.mod h1:4JiKL6vEo8IgXgrDCznPDgYFiScu5wzOo2DZgGIHd1I=
 github.com/rogpeppe/go-internal v1.12.0 h1:exVL4IDcn6na9z1rAb56Vxr+CgyK3nn3O+epU5NdKM8=
 github.com/rogpeppe/go-internal v1.12.0/go.mod h1:E+RYuTGaKKdloAfM02xzb0FW3Paa99yedzYV+kq4uf4=
 github.com/russross/blackfriday v1.6.0 h1:KqfZb0pUVN2lYqZUYRddxF4OR8ZMURnJIG5Y3VRLtww=

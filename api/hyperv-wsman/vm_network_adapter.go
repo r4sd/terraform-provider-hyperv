@@ -142,11 +142,19 @@ func (c *ClientConfig) createNetworkAdapter(ctx context.Context, a api.VmNetwork
 		ElementName: a.Name,
 		SwitchName:  a.SwitchName,
 	}
-	if !a.DynamicMacAddress && a.StaticMacAddress != "" {
+	// 静的 MAC 指定時は MAC 必須 (silent drop 禁止, M2)。区切り文字は正規化して送る。
+	if !a.DynamicMacAddress {
+		if a.StaticMacAddress == "" {
+			return fmt.Errorf("hyperv-wsman: CreateVmNetworkAdapter %q: dynamic_mac_address=false のとき static_mac_address は必須です", a.Name)
+		}
 		opts.StaticMacAddress = true
-		opts.MacAddress = a.StaticMacAddress
+		opts.MacAddress = normalizeMac(a.StaticMacAddress)
 	}
-	if _, err := c.WsmanClient.AddNetworkAdapter(ctx, a.VmName, opts); err != nil {
+	guid, err := c.resolveVMGUID(ctx, a.VmName)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVmNetworkAdapter %q: %w", a.VmName, err)
+	}
+	if _, err := c.WsmanClient.AddNetworkAdapter(ctx, guid, opts); err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmNetworkAdapter %q: %w", a.VmName, err)
 	}
 	return nil
@@ -163,11 +171,15 @@ type networkAdapterRef struct {
 // port(NIC本体: 名前・MAC) → allocation(接続先スイッチ EPR) → switch(表示名) の結合で
 // VmNetworkAdapter を復元する。削除用に Port の InstanceID も保持する。
 func (c *ClientConfig) getNetworkAdapterRefs(ctx context.Context, vmName string) ([]networkAdapterRef, error) {
-	ports, err := c.WsmanClient.ListNetworkAdapters(ctx, vmName)
+	guid, err := c.resolveVMGUID(ctx, vmName)
+	if err != nil {
+		return nil, fmt.Errorf("hyperv-wsman: get network adapters %q: %w", vmName, err)
+	}
+	ports, err := c.WsmanClient.ListNetworkAdapters(ctx, guid)
 	if err != nil {
 		return nil, fmt.Errorf("hyperv-wsman: list network adapters %q: %w", vmName, err)
 	}
-	allocs, err := c.WsmanClient.ListEthernetPortAllocations(ctx, vmName)
+	allocs, err := c.WsmanClient.ListEthernetPortAllocations(ctx, guid)
 	if err != nil {
 		return nil, fmt.Errorf("hyperv-wsman: list port allocations %q: %w", vmName, err)
 	}
@@ -180,8 +192,8 @@ func (c *ClientConfig) getNetworkAdapterRefs(ctx context.Context, vmName string)
 
 // GetVmNetworkAdapters は VM の NIC 一覧を返す (go-wsman 逆引き)。
 //
-// networkAdaptersWaitForIps は本経路では未使用 (ゲスト IP 取得は KVP/統合サービス依存で範囲外)。
-// IpAddresses は空で返す。
+// networkAdaptersWaitForIps の wait_for_ips は名前突合で結果に反映する (winrm 版と同じ、M1)。
+// 実際のゲスト IP 取得 (KVP/統合サービス依存) は本経路では未対応で、IpAddresses は空で返す。
 func (c *ClientConfig) GetVmNetworkAdapters(ctx context.Context, vmName string, networkAdaptersWaitForIps []api.VmNetworkAdapterWaitForIp) ([]api.VmNetworkAdapter, error) {
 	refs, err := c.getNetworkAdapterRefs(ctx, vmName)
 	if err != nil {
@@ -190,6 +202,14 @@ func (c *ClientConfig) GetVmNetworkAdapters(ctx context.Context, vmName string, 
 	result := make([]api.VmNetworkAdapter, 0, len(refs))
 	for _, r := range refs {
 		result = append(result, r.adapter)
+	}
+	// config の wait_for_ips を名前突合で反映 (未設定 NIC は既定 true のまま)。
+	for _, w := range networkAdaptersWaitForIps {
+		for i := range result {
+			if result[i].Name == w.Name {
+				result[i].WaitForIps = w.WaitForIps
+			}
+		}
 	}
 	return result, nil
 }
@@ -298,14 +318,22 @@ func networkAdapterFromParams(
 //
 // port.InstanceID を allocation.Parent と突き合わせて接続先スイッチ EPR を得、switch.Name(GUID) を
 // EPR から引いて表示名 (ElementName) に解決する。未対応フィールドは既定値で埋め、Index は順序で採番。
+//
+// 順序は ElementName でソートする (H3)。CIM に作成順を表す決定的キーが無く、port の InstanceID は
+// ランダム GUID で config 順と無相関のため、表示名順にすることでユーザーが名前で state 順を制御できる。
+// 制約: 同名 NIC が複数あると順序が一意に定まらない (同名複数 NIC は本経路では非対応、ドキュメント参照)。
 func mapNetworkAdapterRefs(
 	vmName string,
 	ports []*hyperv.Msvm_SyntheticEthernetPortSettingData,
 	allocs []*hyperv.Msvm_EthernetPortAllocationSettingData,
 	switches []*hyperv.Msvm_VirtualEthernetSwitch,
 ) []networkAdapterRef {
-	// port InstanceID を安定させるためソート。
-	sort.SliceStable(ports, func(i, j int) bool { return ports[i].InstanceID < ports[j].InstanceID })
+	sort.SliceStable(ports, func(i, j int) bool {
+		if ports[i].ElementName != ports[j].ElementName {
+			return ports[i].ElementName < ports[j].ElementName
+		}
+		return ports[i].InstanceID < ports[j].InstanceID // 同名時のタイブレーク
+	})
 
 	refs := make([]networkAdapterRef, 0, len(ports))
 	for i, p := range ports {
@@ -341,33 +369,47 @@ func resolveSwitchName(portInstanceID string, allocs []*hyperv.Msvm_EthernetPort
 	return ""
 }
 
+// normalizeMac は MAC アドレスの区切り文字 (: - . 空白) を除去して小文字化する。
+// ユーザーが "00:15:5D:.." 等で書いても Get 結果 (12桁hex) とキーが一致するようにする (M2)。
+func normalizeMac(mac string) string {
+	r := strings.NewReplacer(":", "", "-", "", ".", "", " ", "")
+	return strings.ToLower(r.Replace(mac))
+}
+
 // networkAdapterKey は NIC の同一性を (名前, スイッチ, MAC) で表す。
 func networkAdapterKey(a api.VmNetworkAdapter) string {
 	mac := "dynamic"
 	if !a.DynamicMacAddress {
-		mac = strings.ToLower(a.StaticMacAddress)
+		mac = normalizeMac(a.StaticMacAddress)
 	}
 	return fmt.Sprintf("%s/%s/%s", a.Name, strings.ToLower(a.SwitchName), mac)
 }
 
 // planNetworkAdapterReconcile は現状を所望に収束させる remove(Port InstanceID)/add 計画を返す。
+//
+// 同一キー (名前+スイッチ+MAC) の NIC が複数あり得るため multiset 差分で過不足を計算する (H1)。
+// 単純な set 差分では「現状1本・所望2本」で toAdd が空になり永遠に収束しない。
 func planNetworkAdapterReconcile(current []networkAdapterRef, desired []api.VmNetworkAdapter) (toRemove []string, toAdd []api.VmNetworkAdapter) {
-	currentKeys := make(map[string]string, len(current))
+	currentByKey := make(map[string][]string) // key → 現状 Port InstanceID 群
 	for _, r := range current {
-		currentKeys[networkAdapterKey(r.adapter)] = r.portInstanceID
+		k := networkAdapterKey(r.adapter)
+		currentByKey[k] = append(currentByKey[k], r.portInstanceID)
 	}
-	desiredKeys := make(map[string]struct{}, len(desired))
+	desiredByKey := make(map[string][]api.VmNetworkAdapter) // key → 所望 NIC 群
 	for _, d := range desired {
-		desiredKeys[networkAdapterKey(d)] = struct{}{}
+		k := networkAdapterKey(d)
+		desiredByKey[k] = append(desiredByKey[k], d)
 	}
-	for _, r := range current {
-		if _, ok := desiredKeys[networkAdapterKey(r.adapter)]; !ok {
-			toRemove = append(toRemove, r.portInstanceID)
+	// 現状が所望より多いキーは余剰分を remove。
+	for k, ports := range currentByKey {
+		for i := len(desiredByKey[k]); i < len(ports); i++ {
+			toRemove = append(toRemove, ports[i])
 		}
 	}
-	for _, d := range desired {
-		if _, ok := currentKeys[networkAdapterKey(d)]; !ok {
-			toAdd = append(toAdd, d)
+	// 所望が現状より多いキーは不足分を add。
+	for k, ds := range desiredByKey {
+		for i := len(currentByKey[k]); i < len(ds); i++ {
+			toAdd = append(toAdd, ds[i])
 		}
 	}
 	return toRemove, toAdd

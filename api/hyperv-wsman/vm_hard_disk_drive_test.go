@@ -152,6 +152,49 @@ func TestMapHardDiskDriveRefs(t *testing.T) {
 	}
 }
 
+// TestMapHardDiskDriveRefs_ControllerOrderDeterministic は Controller 番号が列挙順でなく
+// InstanceID ソート順で決まることを検証する (H2)。列挙順が入れ替わっても番号が安定する。
+func TestMapHardDiskDriveRefs_ControllerOrderDeterministic(t *testing.T) {
+	vm := "vm1"
+	// InstanceID 昇順では A < B。あえて逆順 [B, A] で渡す。
+	ctrlA := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: `Microsoft:` + vm + `\SCSI-A`}
+	ctrlB := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: `Microsoft:` + vm + `\SCSI-B`}
+	driveOnA := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: `Microsoft:` + vm + `\D-A`, Parent: ctrlA.InstanceID, AddressOnParent: "0"}
+	storages := []*hyperv.Msvm_StorageAllocationSettingData{
+		{ResourceSubType: hyperv.ResourceSubTypeVirtualHardDisk, HostResource: `D:\a.vhdx`, Parent: driveOnA.InstanceID},
+	}
+	got := mapHardDiskDriveRefs(vm, storages,
+		[]*hyperv.Msvm_ResourceAllocationSettingData{driveOnA},
+		nil,
+		[]*hyperv.Msvm_ResourceAllocationSettingData{ctrlB, ctrlA}, // 逆順で渡す
+	)
+	if len(got) != 1 {
+		t.Fatalf("len: got %d, want 1", len(got))
+	}
+	// ソート後 A=番号0 なので、SCSI-A の disk は ControllerNumber 0。
+	if got[0].drive.ControllerNumber != 0 {
+		t.Errorf("ControllerNumber: got %d, want 0 (InstanceID ソートで SCSI-A が先)", got[0].drive.ControllerNumber)
+	}
+}
+
+// TestMapHardDiskDriveRefs_ParseFailureSkipped は AddressOnParent がパース不能な drive を
+// スキップすることを検証する (M4、location=0 化でキー衝突を防ぐ)。
+func TestMapHardDiskDriveRefs_ParseFailureSkipped(t *testing.T) {
+	vm := "vm1"
+	ctrl := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: `Microsoft:` + vm + `\SCSI-0`}
+	badDrive := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: `Microsoft:` + vm + `\D-bad`, Parent: ctrl.InstanceID, AddressOnParent: "notanumber"}
+	storages := []*hyperv.Msvm_StorageAllocationSettingData{
+		{ResourceSubType: hyperv.ResourceSubTypeVirtualHardDisk, HostResource: `D:\a.vhdx`, Parent: badDrive.InstanceID},
+	}
+	got := mapHardDiskDriveRefs(vm, storages,
+		[]*hyperv.Msvm_ResourceAllocationSettingData{badDrive}, nil,
+		[]*hyperv.Msvm_ResourceAllocationSettingData{ctrl},
+	)
+	if len(got) != 0 {
+		t.Errorf("AddressOnParent パース失敗の drive はスキップされるべき; got %d", len(got))
+	}
+}
+
 // TestMapHardDiskDriveRefs_UnresolvedSkipped は親 Drive/Controller が特定できない storage をスキップ。
 func TestMapHardDiskDriveRefs_UnresolvedSkipped(t *testing.T) {
 	got := mapHardDiskDriveRefs("vm",
@@ -211,6 +254,18 @@ func TestPlanHardDiskDriveReconcile(t *testing.T) {
 		detach, attach := planHardDiskDriveReconcile(cur, des)
 		if len(detach) != 1 || len(attach) != 1 {
 			t.Errorf("種別変更は detach+attach: detach=%v attach=%v", detach, attach)
+		}
+	})
+	// M3: チェックポイント (.avhdx) が占めるスロットは detach も attach もしない (チェーン保護)。
+	t.Run("checkpoint(.avhdx)は触らない", func(t *testing.T) {
+		cur := []hardDiskDriveRef{mkRef("chk", api.ControllerType_Scsi, 0, 0, `D:\boot_A1B2.avhdx`)}
+		des := []api.VmHardDiskDrive{mkD(api.ControllerType_Scsi, 0, 0, `D:\boot.vhdx`)}
+		detach, attach := planHardDiskDriveReconcile(cur, des)
+		if len(detach) != 0 {
+			t.Errorf("checkpoint disk は detach しないべき: detach=%v", detach)
+		}
+		if len(attach) != 0 {
+			t.Errorf("checkpoint が占めるスロットには attach しないべき: attach=%v", attach)
 		}
 	})
 }

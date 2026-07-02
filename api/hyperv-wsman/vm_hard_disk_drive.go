@@ -76,6 +76,20 @@ func unsupportedHardDiskOptions(
 	return nil
 }
 
+// resolveVMGUID は VM の表示名 (ElementName) を go-wsman が要求する GUID
+// (Msvm_ComputerSystem.Name) に解決する。
+//
+// go-wsman の各メソッドの vmName 引数は GUID 契約 (matchSettingDataVM が
+// "Microsoft:<GUID>" 前方一致でフィルタする)。terraform から来る表示名をそのまま渡すと
+// 列挙が silent に空を返すため、必ず本関数で解決してから go-wsman を呼ぶ。
+func (c *ClientConfig) resolveVMGUID(ctx context.Context, name string) (string, error) {
+	cs, err := c.WsmanClient.FindComputerSystemByElementName(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("resolve VM %q: %w", name, err)
+	}
+	return cs.Name, nil
+}
+
 // CreateVmHardDiskDrive は go-wsman 経由で VHD を IDE/SCSI Controller にアタッチする。
 func (c *ClientConfig) CreateVmHardDiskDrive(
 	ctx context.Context,
@@ -100,14 +114,18 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
 	}
+	guid, err := c.resolveVMGUID(ctx, vmName)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
+	}
 	// go-wsman で作った VM はシェル状態で SCSI Controller を持たない (#88) ため、SCSI
 	// アタッチ前に対象 Controller の存在を保証する。IDE は Gen1 に既定で存在するので対象外。
 	if controllerType == api.ControllerType_Scsi {
-		if err := c.ensureScsiController(ctx, vmName, controllerNumber); err != nil {
+		if err := c.ensureScsiController(ctx, guid, controllerNumber); err != nil {
 			return err
 		}
 	}
-	_, err = c.WsmanClient.AttachVHD(ctx, vmName, hyperv.AttachVHDOptions{
+	_, err = c.WsmanClient.AttachVHD(ctx, guid, hyperv.AttachVHDOptions{
 		ControllerType:     wsmanCT,
 		ControllerNumber:   int(controllerNumber),
 		ControllerLocation: int(controllerLocation),
@@ -120,30 +138,31 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 }
 
 // ensureScsiController は controllerNumber 番目の SCSI Controller が存在することを保証する。
+// vmGUID は解決済みの VM GUID (呼び出し側で resolveVMGUID 済み)。
 //
 // go-wsman の DefineSystem はシェル VM を作り SCSI Controller を持たない (#88) ため、必要数に
 // 満たなければ AddScsiController で追加する。追加のたびに再列挙して件数を確認する (無限ループ防止)。
-func (c *ClientConfig) ensureScsiController(ctx context.Context, vmName string, controllerNumber int32) error {
-	controllers, err := c.WsmanClient.ListSCSIControllers(ctx, vmName)
+func (c *ClientConfig) ensureScsiController(ctx context.Context, vmGUID string, controllerNumber int32) error {
+	controllers, err := c.WsmanClient.ListSCSIControllers(ctx, vmGUID)
 	if err != nil {
-		return fmt.Errorf("hyperv-wsman: ensure SCSI controller %q: %w", vmName, err)
+		return fmt.Errorf("hyperv-wsman: ensure SCSI controller %q: %w", vmGUID, err)
 	}
 	for int32(len(controllers)) <= controllerNumber {
-		res, err := c.WsmanClient.AddScsiController(ctx, vmName)
+		res, err := c.WsmanClient.AddScsiController(ctx, vmGUID)
 		if err != nil {
-			return fmt.Errorf("hyperv-wsman: add SCSI controller %q: %w", vmName, err)
+			return fmt.Errorf("hyperv-wsman: add SCSI controller %q: %w", vmGUID, err)
 		}
 		if res.JobRef != "" {
 			if err := c.WsmanClient.WaitForJob(ctx, res.JobRef); err != nil {
-				return fmt.Errorf("hyperv-wsman: wait add SCSI controller %q: %w", vmName, err)
+				return fmt.Errorf("hyperv-wsman: wait add SCSI controller %q: %w", vmGUID, err)
 			}
 		}
-		next, err := c.WsmanClient.ListSCSIControllers(ctx, vmName)
+		next, err := c.WsmanClient.ListSCSIControllers(ctx, vmGUID)
 		if err != nil {
-			return fmt.Errorf("hyperv-wsman: ensure SCSI controller %q: %w", vmName, err)
+			return fmt.Errorf("hyperv-wsman: ensure SCSI controller %q: %w", vmGUID, err)
 		}
 		if len(next) <= len(controllers) {
-			return fmt.Errorf("hyperv-wsman: add SCSI controller %q: 追加後も件数が増えない (%d)", vmName, len(next))
+			return fmt.Errorf("hyperv-wsman: add SCSI controller %q: 追加後も件数が増えない (%d)", vmGUID, len(next))
 		}
 		controllers = next
 	}
@@ -161,19 +180,23 @@ type hardDiskDriveRef struct {
 // storage(ファイル) → drive(Controller内位置) → controller(IDE/SCSI種別・番号) の 3 段結合で
 // provider の VmHardDiskDrive を復元する。Detach 用に Drive の InstanceID も保持する。
 func (c *ClientConfig) getHardDiskDriveRefs(ctx context.Context, vmName string) ([]hardDiskDriveRef, error) {
-	storages, err := c.WsmanClient.ListAttachedStorage(ctx, vmName)
+	guid, err := c.resolveVMGUID(ctx, vmName)
+	if err != nil {
+		return nil, fmt.Errorf("hyperv-wsman: get hard disk drives %q: %w", vmName, err)
+	}
+	storages, err := c.WsmanClient.ListAttachedStorage(ctx, guid)
 	if err != nil {
 		return nil, fmt.Errorf("hyperv-wsman: list attached storage %q: %w", vmName, err)
 	}
-	drives, err := c.WsmanClient.ListDiskDrives(ctx, vmName)
+	drives, err := c.WsmanClient.ListDiskDrives(ctx, guid)
 	if err != nil {
 		return nil, fmt.Errorf("hyperv-wsman: list disk drives %q: %w", vmName, err)
 	}
-	ideCtrls, err := c.WsmanClient.ListIDEControllers(ctx, vmName)
+	ideCtrls, err := c.WsmanClient.ListIDEControllers(ctx, guid)
 	if err != nil {
 		return nil, fmt.Errorf("hyperv-wsman: list IDE controllers %q: %w", vmName, err)
 	}
-	scsiCtrls, err := c.WsmanClient.ListSCSIControllers(ctx, vmName)
+	scsiCtrls, err := c.WsmanClient.ListSCSIControllers(ctx, guid)
 	if err != nil {
 		return nil, fmt.Errorf("hyperv-wsman: list SCSI controllers %q: %w", vmName, err)
 	}
@@ -295,7 +318,12 @@ func mapHardDiskDriveRefs(
 	for _, d := range drives {
 		driveByID[d.InstanceID] = d
 	}
-	// controller InstanceID → (種別, 番号)
+	// controller InstanceID → (種別, 番号)。
+	// WS-Man の列挙順は無保証なので、InstanceID でソートしてから番号を振る。読み取りごとに番号が
+	// 入れ替わると全 disk のキーが変わり誤 detach/attach を招くため決定的順序が必須 (H2)。
+	// go-wsman 側 attachStorage も同じ InstanceID ソートで controllers[番号] を選ぶ (書き込みと一致)。
+	sortByInstanceID(ideCtrls)
+	sortByInstanceID(scsiCtrls)
 	type ctrlInfo struct {
 		ct     api.ControllerType
 		number int32
@@ -323,7 +351,12 @@ func mapHardDiskDriveRefs(
 		}
 		// AddressOnParent は Controller 内 location (IDE 0-1 / SCSI 0-63)。int32 に収まる範囲で
 		// パースする (ParseInt bitSize=32 で上限保証、CodeQL go/incorrect-integer-conversion 対策)。
-		location, _ := strconv.ParseInt(drive.AddressOnParent, 10, 32)
+		// パース失敗は握り潰さずスキップする (location=0 に化けると実在の 0 番 disk とキー衝突し
+		// reconcile が誤判断するため、M4)。
+		location, err := strconv.ParseInt(drive.AddressOnParent, 10, 32)
+		if err != nil {
+			continue
+		}
 		refs = append(refs, hardDiskDriveRef{
 			driveInstanceID: drive.InstanceID,
 			drive: api.VmHardDiskDrive{
@@ -362,6 +395,13 @@ func matchRefKey[V any](ref string, m map[string]V) string {
 	return ""
 }
 
+// sortByInstanceID は Controller 一覧を InstanceID で安定ソートする (番号採番の決定性のため)。
+func sortByInstanceID(items []*hyperv.Msvm_ResourceAllocationSettingData) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return items[i].InstanceID < items[j].InstanceID
+	})
+}
+
 // sortHardDiskDriveRefs は (種別, Controller番号, 位置) で安定ソートする (index の決定性のため)。
 func sortHardDiskDriveRefs(refs []hardDiskDriveRef) {
 	sort.SliceStable(refs, func(i, j int) bool {
@@ -382,13 +422,40 @@ func hardDiskDriveKey(d api.VmHardDiskDrive) string {
 	return fmt.Sprintf("%d/%d/%d/%s", d.ControllerType, d.ControllerNumber, d.ControllerLocation, strings.ToLower(d.Path))
 }
 
+// isAvhdx はパスが差分ディスク (チェックポイントの .avhdx) かどうかを返す。
+func isAvhdx(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), ".avhdx")
+}
+
+// diskSlotKey は disk の物理スロット (種別, Controller番号, 位置) を表す (パスを含めない)。
+func diskSlotKey(d api.VmHardDiskDrive) string {
+	return fmt.Sprintf("%d/%d/%d", d.ControllerType, d.ControllerNumber, d.ControllerLocation)
+}
+
 // planHardDiskDriveReconcile は現状 refs を所望 desired に収束させる detach/attach 計画を返す。
 //
 // 現状にあって所望に無いものを Detach (Drive InstanceID)、所望にあって現状に無いものを Attach。
+//
+// チェックポイント保護 (M3): VM にスナップショットがあると Get は差分ディスク (.avhdx) のパスを返すが
+// config は基底 (.vhdx) を持つため、素朴にキー比較すると detach→attach してスナップショットチェーンを
+// 破壊する。基底↔差分の対応はパス単体からは一意に判定できない (基底名にアンダースコアを含み得る) ため、
+// .avhdx が占めるスロット (種別/番号/位置) は「触らない」= detach もそのスロットへの attach もしない、
+// という保守的な扱いにする。チェックポイント運用の本格対応は別途 (#46 の v2.1)。
+//
 // 純関数なので table-driven test で検証できる。
 func planHardDiskDriveReconcile(current []hardDiskDriveRef, desired []api.VmHardDiskDrive) (toDetach []string, toAttach []api.VmHardDiskDrive) {
-	currentKeys := make(map[string]string, len(current)) // key → driveInstanceID
+	// .avhdx が占めるスロットを収集 (このスロットは detach/attach 対象外)。
+	checkpointSlots := make(map[string]struct{})
 	for _, r := range current {
+		if isAvhdx(r.drive.Path) {
+			checkpointSlots[diskSlotKey(r.drive)] = struct{}{}
+		}
+	}
+	currentKeys := make(map[string]string, len(current)) // key → driveInstanceID (.avhdx は除外)
+	for _, r := range current {
+		if isAvhdx(r.drive.Path) {
+			continue
+		}
 		currentKeys[hardDiskDriveKey(r.drive)] = r.driveInstanceID
 	}
 	desiredKeys := make(map[string]struct{}, len(desired))
@@ -396,11 +463,17 @@ func planHardDiskDriveReconcile(current []hardDiskDriveRef, desired []api.VmHard
 		desiredKeys[hardDiskDriveKey(d)] = struct{}{}
 	}
 	for _, r := range current {
+		if isAvhdx(r.drive.Path) {
+			continue // チェックポイントの差分ディスクは detach しない
+		}
 		if _, ok := desiredKeys[hardDiskDriveKey(r.drive)]; !ok {
 			toDetach = append(toDetach, r.driveInstanceID)
 		}
 	}
 	for _, d := range desired {
+		if _, ok := checkpointSlots[diskSlotKey(d)]; ok {
+			continue // チェックポイントが占めるスロットには attach しない
+		}
 		if _, ok := currentKeys[hardDiskDriveKey(d)]; !ok {
 			toAttach = append(toAttach, d)
 		}

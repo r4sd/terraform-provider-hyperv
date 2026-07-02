@@ -174,4 +174,59 @@ func TestPlanNetworkAdapterReconcile(t *testing.T) {
 			t.Errorf("add: got %v", add)
 		}
 	})
+	// H1: 同一キー (同名+同スイッチ+dynamic) が複数あっても multiset で過不足を計算する。
+	t.Run("同一キー1本→2本 = add1", func(t *testing.T) {
+		cur := []networkAdapterRef{mkRef("p1", "eth0", "vSwitch")}
+		des := []api.VmNetworkAdapter{mkD("eth0", "vSwitch"), mkD("eth0", "vSwitch")}
+		rm, add := planNetworkAdapterReconcile(cur, des)
+		if len(rm) != 0 || len(add) != 1 {
+			t.Errorf("1本→2本は add1 のはず: rm=%v add=%d", rm, len(add))
+		}
+	})
+	t.Run("同一キー2本→1本 = remove1", func(t *testing.T) {
+		cur := []networkAdapterRef{mkRef("p1", "eth0", "vSwitch"), mkRef("p2", "eth0", "vSwitch")}
+		des := []api.VmNetworkAdapter{mkD("eth0", "vSwitch")}
+		rm, add := planNetworkAdapterReconcile(cur, des)
+		if len(rm) != 1 || len(add) != 0 {
+			t.Errorf("2本→1本は remove1 のはず: rm=%d add=%v", len(rm), add)
+		}
+	})
+}
+
+// TestNormalizeMac_KeyEquivalence は MAC 区切り形式の違いが同一キーになることを検証する (M2)。
+func TestNormalizeMac_KeyEquivalence(t *testing.T) {
+	mk := func(mac string) api.VmNetworkAdapter {
+		a := defaultVmNetworkAdapter()
+		a.Name, a.SwitchName = "eth0", "vSwitch"
+		a.DynamicMacAddress = false
+		a.StaticMacAddress = mac
+		return a
+	}
+	formats := []string{"00:15:5D:00:11:22", "00-15-5D-00-11-22", "00155D001122", "00155d001122"}
+	want := networkAdapterKey(mk(formats[0]))
+	for _, f := range formats[1:] {
+		if got := networkAdapterKey(mk(f)); got != want {
+			t.Errorf("MAC %q のキーが不一致: got %q want %q", f, got, want)
+		}
+	}
+}
+
+// TestMapNetworkAdapterRefs_ElementNameOrder は NIC が ElementName 順に並ぶことを検証する (H3)。
+func TestMapNetworkAdapterRefs_ElementNameOrder(t *testing.T) {
+	vm := "vm1"
+	// InstanceID 順では zzz が aaa より後だが、ElementName 順で並べたい。
+	ports := []*hyperv.Msvm_SyntheticEthernetPortSettingData{
+		{InstanceID: `Microsoft:` + vm + `\aaa`, ElementName: "zeta"},
+		{InstanceID: `Microsoft:` + vm + `\zzz`, ElementName: "alpha"},
+	}
+	got := mapNetworkAdapterRefs(vm, ports, nil, nil)
+	if len(got) != 2 {
+		t.Fatalf("len: got %d, want 2", len(got))
+	}
+	if got[0].adapter.Name != "alpha" || got[1].adapter.Name != "zeta" {
+		t.Errorf("ElementName 順のはず: got [%s, %s]", got[0].adapter.Name, got[1].adapter.Name)
+	}
+	if got[0].adapter.Index != 0 || got[1].adapter.Index != 1 {
+		t.Errorf("Index が順序どおりでない")
+	}
 }

@@ -355,9 +355,13 @@ func mapNetworkAdapterRefs(
 }
 
 // resolveSwitchName は port に紐づく allocation を辿り、接続先スイッチの表示名を返す (無ければ空)。
+//
+// alloc.Parent は WMI オブジェクトパス (InstanceID 二重エスケープ) のため extractInstanceIDFromRef で
+// 正規化してから port と突き合わせる。スイッチ側は Name(GUID、バックスラッシュ無し) が HostResource
+// に含まれるかで判定する。
 func resolveSwitchName(portInstanceID string, allocs []*hyperv.Msvm_EthernetPortAllocationSettingData, switches []*hyperv.Msvm_VirtualEthernetSwitch) string {
 	for _, alloc := range allocs {
-		if alloc.Parent == "" || !strings.Contains(alloc.Parent, portInstanceID) {
+		if extractInstanceIDFromRef(alloc.Parent) != portInstanceID {
 			continue
 		}
 		for _, sw := range switches {

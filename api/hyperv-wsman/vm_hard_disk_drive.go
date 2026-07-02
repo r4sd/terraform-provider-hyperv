@@ -379,16 +379,40 @@ func mapHardDiskDriveRefs(
 	return refs
 }
 
-// matchRefKey は EPR/参照文字列 ref に対応するマップのキーを返す (無ければ空文字)。
+// extractInstanceIDFromRef は go-wsman が返す親参照から InstanceID を取り出す。
 //
-// go-wsman の Unmarshal は Parent(EPR) から末尾の非空テキスト = InstanceID を取り出すため、
-// 通常は ref がそのままキーに一致する。実機で EPR ラッパーが残る場合に備え、包含一致も見る。
-func matchRefKey[V any](ref string, m map[string]V) string {
-	if _, ok := m[ref]; ok {
+// 実 Hyper-V の Parent/HostResource は WMI オブジェクトパス
+//
+//	\\HOST\root\...\v2:Msvm_...SettingData.InstanceID="Microsoft:GUID\\...\\0"
+//
+// 形式で、参照内の InstanceID 値はバックスラッシュが二重エスケープ (\\) される。一方 List 系が
+// 返す InstanceID は単一バックスラッシュ (\) なので、`.InstanceID="..."` を抽出して \\→\ に戻し、
+// 突き合わせできるようにする。ref が既に素の InstanceID (golden 等) の場合はそのまま返す。
+func extractInstanceIDFromRef(ref string) string {
+	const marker = `.InstanceID="`
+	i := strings.Index(ref, marker)
+	if i < 0 {
 		return ref
 	}
+	rest := ref[i+len(marker):]
+	if j := strings.LastIndex(rest, `"`); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.ReplaceAll(rest, `\\`, `\`)
+}
+
+// matchRefKey は EPR/参照文字列 ref に対応するマップのキーを返す (無ければ空文字)。
+//
+// 実 Hyper-V の Parent は WMI オブジェクトパス (InstanceID 二重エスケープ) のため、
+// extractInstanceIDFromRef で素の InstanceID に正規化してから突き合わせる。
+func matchRefKey[V any](ref string, m map[string]V) string {
+	id := extractInstanceIDFromRef(ref)
+	if _, ok := m[id]; ok {
+		return id
+	}
+	// フォールバック: 抽出後も一致しない場合の包含一致 (golden / 想定外形式のため)。
 	for k := range m {
-		if k != "" && strings.Contains(ref, k) {
+		if k != "" && strings.Contains(id, k) {
 			return k
 		}
 	}

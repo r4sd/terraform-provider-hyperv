@@ -2,6 +2,7 @@ package hyperv_wsman
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
@@ -192,6 +193,50 @@ func TestMapHardDiskDriveRefs_ParseFailureSkipped(t *testing.T) {
 	)
 	if len(got) != 0 {
 		t.Errorf("AddressOnParent パース失敗の drive はスキップされるべき; got %d", len(got))
+	}
+}
+
+// TestExtractInstanceIDFromRef は実 Hyper-V の WMI オブジェクトパス (InstanceID 二重エスケープ) から
+// 素の InstanceID を取り出せることを検証する。
+func TestExtractInstanceIDFromRef(t *testing.T) {
+	// 実機の Parent 形式 (バックスラッシュ二重エスケープ)。
+	ref := `\\HOST\root\virtualization\v2:Msvm_ResourceAllocationSettingData.InstanceID="Microsoft:27BBD2D0\\83F8638B\\0\\0\\D"`
+	want := `Microsoft:27BBD2D0\83F8638B\0\0\D`
+	if got := extractInstanceIDFromRef(ref); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// 素の InstanceID (golden 形式) はそのまま返す。
+	plain := `Microsoft:vm\DISK-0`
+	if got := extractInstanceIDFromRef(plain); got != plain {
+		t.Errorf("plain: got %q, want %q", got, plain)
+	}
+}
+
+// TestMapHardDiskDriveRefs_RealEPRFormat は実 Hyper-V の Parent 形式 (二重エスケープ WMI パス) で
+// storage→drive→controller の結合が成立することを検証する (Fable レビュー C1 の実機バグ回帰)。
+func TestMapHardDiskDriveRefs_RealEPRFormat(t *testing.T) {
+	vm := "27BBD2D0"
+	ctrlID := `Microsoft:27BBD2D0\SCSI\0`
+	driveID := `Microsoft:27BBD2D0\SCSI\0\0\D`
+	// Parent は WMI オブジェクトパス形式 (InstanceID 部分は \\ で二重エスケープ)。
+	toRef := func(id string) string {
+		esc := strings.ReplaceAll(id, `\`, `\\`)
+		return `\\HOST\root\virtualization\v2:Msvm_ResourceAllocationSettingData.InstanceID="` + esc + `"`
+	}
+	ctrl := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: ctrlID}
+	drive := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: driveID, Parent: toRef(ctrlID), AddressOnParent: "0"}
+	storages := []*hyperv.Msvm_StorageAllocationSettingData{
+		{ResourceSubType: hyperv.ResourceSubTypeVirtualHardDisk, HostResource: `D:\a.vhdx`, Parent: toRef(driveID)},
+	}
+	got := mapHardDiskDriveRefs(vm, storages,
+		[]*hyperv.Msvm_ResourceAllocationSettingData{drive}, nil,
+		[]*hyperv.Msvm_ResourceAllocationSettingData{ctrl},
+	)
+	if len(got) != 1 {
+		t.Fatalf("実 EPR 形式で結合できていない: got %d, want 1", len(got))
+	}
+	if got[0].drive.ControllerType != api.ControllerType_Scsi || got[0].drive.Path != `D:\a.vhdx` {
+		t.Errorf("got %+v", got[0].drive)
 	}
 }
 

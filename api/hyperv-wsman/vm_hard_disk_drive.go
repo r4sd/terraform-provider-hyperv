@@ -283,14 +283,16 @@ func mapHardDiskDriveRefs(
 		if !ok {
 			continue // 親 Controller が特定できない
 		}
-		location, _ := strconv.Atoi(drive.AddressOnParent)
+		// AddressOnParent は Controller 内 location (IDE 0-1 / SCSI 0-63)。int32 に収まる範囲で
+		// パースする (ParseInt bitSize=32 で上限保証、CodeQL go/incorrect-integer-conversion 対策)。
+		location, _ := strconv.ParseInt(drive.AddressOnParent, 10, 32)
 		refs = append(refs, hardDiskDriveRef{
 			driveInstanceID: drive.InstanceID,
 			drive: api.VmHardDiskDrive{
 				VmName:                        vmName,
 				ControllerType:                ci.ct,
 				ControllerNumber:              ci.number,
-				ControllerLocation:            int32(location),
+				ControllerLocation:            int32(location), // ParseInt(bitSize=32) 済みで安全
 				Path:                          s.HostResource,
 				DiskNumber:                    hardDiskDiskNumberUnset,
 				ResourcePoolName:              hardDiskDefaultPool,

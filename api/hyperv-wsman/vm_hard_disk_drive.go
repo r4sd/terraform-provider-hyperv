@@ -125,13 +125,13 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 			return err
 		}
 	}
-	_, err = c.WsmanClient.AttachVHD(ctx, guid, hyperv.AttachVHDOptions{
+	// AttachVHD は内部で Drive/Storage の非同期 Job 完了まで待つ (go-wsman 側)。
+	if _, err := c.WsmanClient.AttachVHD(ctx, guid, hyperv.AttachVHDOptions{
 		ControllerType:     wsmanCT,
 		ControllerNumber:   int(controllerNumber),
 		ControllerLocation: int(controllerLocation),
 		Path:               path,
-	})
-	if err != nil {
+	}); err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
 	}
 	return nil

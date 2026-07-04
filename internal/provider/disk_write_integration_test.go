@@ -117,6 +117,20 @@ func TestRealHostScsiDiskWriteWsman(t *testing.T) {
 	if got[0].Path != vhdPath {
 		t.Errorf("Path: got %q, want %q", got[0].Path, vhdPath)
 	}
-	// detach (DeleteVmHardDiskDrive) は go-wsman #97 (Drive 削除が実機 0x80041001) 解消後に検証する。
-	// VM の後始末は t.Cleanup の DeleteVm が担う (VM ごと消せば disk も消える)。
+
+	// 5. detach 検証 (#97): DeleteVmHardDiskDrive で Storage→Drive の 2 段削除を行い、
+	//    逆引き Get が 0 本になることを確認する。子 SASD を残したまま Drive を消すと
+	//    実機は 0x80041001 で失敗するため、ここが通れば 2 段削除が正しいことの実証になる。
+	if err := cc.DeleteVmHardDiskDrive(ctx, vmName, 0); err != nil {
+		t.Fatalf("DeleteVmHardDiskDrive: %v", err)
+	}
+	after, err := cc.GetVmHardDiskDrives(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVmHardDiskDrives (detach 後): %v", err)
+	}
+	t.Logf("detach 後: disks=%d", len(after))
+	if len(after) != 0 {
+		t.Fatalf("detach 後は 0 本のはず, got %d", len(after))
+	}
+	// VM の後始末は t.Cleanup の DeleteVm が担う (VHD ファイルは CIM では消せず残留)。
 }

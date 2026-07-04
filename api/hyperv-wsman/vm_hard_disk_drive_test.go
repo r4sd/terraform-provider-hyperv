@@ -257,8 +257,9 @@ func TestMapHardDiskDriveRefs_UnresolvedSkipped(t *testing.T) {
 func TestPlanHardDiskDriveReconcile(t *testing.T) {
 	mkRef := func(id string, ct api.ControllerType, num, loc int32, path string) hardDiskDriveRef {
 		return hardDiskDriveRef{
-			driveInstanceID: id,
-			drive:           api.VmHardDiskDrive{ControllerType: ct, ControllerNumber: num, ControllerLocation: loc, Path: path},
+			driveInstanceID:   id,
+			storageInstanceID: id + "-storage", // detach 計画が Storage InstanceID も運ぶことを検証する
+			drive:             api.VmHardDiskDrive{ControllerType: ct, ControllerNumber: num, ControllerLocation: loc, Path: path},
 		}
 	}
 	mkD := func(ct api.ControllerType, num, loc int32, path string) api.VmHardDiskDrive {
@@ -285,8 +286,11 @@ func TestPlanHardDiskDriveReconcile(t *testing.T) {
 		cur := []hardDiskDriveRef{mkRef("old", api.ControllerType_Ide, 0, 0, `D:\old.vhdx`)}
 		des := []api.VmHardDiskDrive{mkD(api.ControllerType_Scsi, 0, 0, `D:\new.vhdx`)}
 		detach, attach := planHardDiskDriveReconcile(cur, des)
-		if len(detach) != 1 || detach[0] != "old" {
+		if len(detach) != 1 || detach[0].driveInstanceID != "old" {
 			t.Errorf("detach: got %v, want [old]", detach)
+		}
+		if len(detach) == 1 && detach[0].storageInstanceID != "old-storage" {
+			t.Errorf("detach は Storage InstanceID も運ぶべき: got %q", detach[0].storageInstanceID)
 		}
 		if len(attach) != 1 || attach[0].Path != `D:\new.vhdx` {
 			t.Errorf("attach: got %v", attach)

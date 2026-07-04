@@ -169,10 +169,14 @@ func (c *ClientConfig) ensureScsiController(ctx context.Context, vmGUID string, 
 	return nil
 }
 
-// hardDiskDriveRef は 1 本の VHD アタッチと、その Detach に必要な Drive InstanceID を束ねる。
+// hardDiskDriveRef は 1 本の VHD アタッチと、その Detach に必要な InstanceID を束ねる。
+//
+// Detach は「Storage (SASD) 削除 → Drive (RASD) 削除」の 2 段が必須なため、Drive だけでなく
+// Storage の InstanceID も保持する (子 SASD を残したまま Drive を消すと VMMS が拒否する #97)。
 type hardDiskDriveRef struct {
-	drive           api.VmHardDiskDrive
-	driveInstanceID string // Msvm_ResourceAllocationSettingData (Disk Drive) の InstanceID
+	drive             api.VmHardDiskDrive
+	driveInstanceID   string // Msvm_ResourceAllocationSettingData (Disk Drive) の InstanceID
+	storageInstanceID string // Msvm_StorageAllocationSettingData (VHD) の InstanceID
 }
 
 // getHardDiskDriveRefs は VM の VHD 一覧を go-wsman の逆引きで組み立てる (順序安定)。
@@ -218,8 +222,8 @@ func (c *ClientConfig) GetVmHardDiskDrives(ctx context.Context, vmName string) (
 
 // DeleteVmHardDiskDrive は index 番目の VHD を go-wsman 経由で Detach する。
 //
-// index は GetVmHardDiskDrives が返す順序に対応する。逆引きで Drive InstanceID を解決して
-// DetachStorage を呼ぶ (Drive を消すと紐づく Storage も連鎖削除される)。
+// index は GetVmHardDiskDrives が返す順序に対応する。逆引きで Storage/Drive の InstanceID を
+// 解決して DetachStorage を呼ぶ (Storage → Drive の 2 段削除)。
 func (c *ClientConfig) DeleteVmHardDiskDrive(ctx context.Context, vmName string, index int) error {
 	refs, err := c.getHardDiskDriveRefs(ctx, vmName)
 	if err != nil {
@@ -228,7 +232,7 @@ func (c *ClientConfig) DeleteVmHardDiskDrive(ctx context.Context, vmName string,
 	if index < 0 || index >= len(refs) {
 		return fmt.Errorf("hyperv-wsman: DeleteVmHardDiskDrive %q: index %d out of range (VM has %d disks)", vmName, index, len(refs))
 	}
-	if _, err := c.WsmanClient.DetachStorage(ctx, refs[index].driveInstanceID); err != nil {
+	if _, err := c.WsmanClient.DetachStorage(ctx, refs[index].driveInstanceID, refs[index].storageInstanceID); err != nil {
 		return fmt.Errorf("hyperv-wsman: DeleteVmHardDiskDrive %q: %w", vmName, err)
 	}
 	return nil
@@ -284,8 +288,8 @@ func (c *ClientConfig) CreateOrUpdateVmHardDiskDrives(ctx context.Context, vmNam
 		return err
 	}
 	toDetach, toAttach := planHardDiskDriveReconcile(current, hardDiskDrives)
-	for _, driveInstanceID := range toDetach {
-		if _, err := c.WsmanClient.DetachStorage(ctx, driveInstanceID); err != nil {
+	for _, r := range toDetach {
+		if _, err := c.WsmanClient.DetachStorage(ctx, r.driveInstanceID, r.storageInstanceID); err != nil {
 			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmHardDiskDrives %q: detach: %w", vmName, err)
 		}
 	}
@@ -358,7 +362,8 @@ func mapHardDiskDriveRefs(
 			continue
 		}
 		refs = append(refs, hardDiskDriveRef{
-			driveInstanceID: drive.InstanceID,
+			driveInstanceID:   drive.InstanceID,
+			storageInstanceID: s.InstanceID,
 			drive: api.VmHardDiskDrive{
 				VmName:                        vmName,
 				ControllerType:                ci.ct,
@@ -458,7 +463,8 @@ func diskSlotKey(d api.VmHardDiskDrive) string {
 
 // planHardDiskDriveReconcile は現状 refs を所望 desired に収束させる detach/attach 計画を返す。
 //
-// 現状にあって所望に無いものを Detach (Drive InstanceID)、所望にあって現状に無いものを Attach。
+// 現状にあって所望に無いものを Detach (Storage/Drive の 2 段削除に両 InstanceID が要る)、
+// 所望にあって現状に無いものを Attach。
 //
 // チェックポイント保護 (M3): VM にスナップショットがあると Get は差分ディスク (.avhdx) のパスを返すが
 // config は基底 (.vhdx) を持つため、素朴にキー比較すると detach→attach してスナップショットチェーンを
@@ -467,7 +473,7 @@ func diskSlotKey(d api.VmHardDiskDrive) string {
 // という保守的な扱いにする。チェックポイント運用の本格対応は別途 (#46 の v2.1)。
 //
 // 純関数なので table-driven test で検証できる。
-func planHardDiskDriveReconcile(current []hardDiskDriveRef, desired []api.VmHardDiskDrive) (toDetach []string, toAttach []api.VmHardDiskDrive) {
+func planHardDiskDriveReconcile(current []hardDiskDriveRef, desired []api.VmHardDiskDrive) (toDetach []hardDiskDriveRef, toAttach []api.VmHardDiskDrive) {
 	// .avhdx が占めるスロットを収集 (このスロットは detach/attach 対象外)。
 	checkpointSlots := make(map[string]struct{})
 	for _, r := range current {
@@ -491,7 +497,7 @@ func planHardDiskDriveReconcile(current []hardDiskDriveRef, desired []api.VmHard
 			continue // チェックポイントの差分ディスクは detach しない
 		}
 		if _, ok := desiredKeys[hardDiskDriveKey(r.drive)]; !ok {
-			toDetach = append(toDetach, r.driveInstanceID)
+			toDetach = append(toDetach, r)
 		}
 	}
 	for _, d := range desired {

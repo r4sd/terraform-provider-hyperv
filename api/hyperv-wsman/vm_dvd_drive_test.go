@@ -29,6 +29,31 @@ func TestClientConfig_ImplementsHypervVmDvdDriveClient(t *testing.T) {
 	}
 }
 
+// TestValidateDvdOptions は未対応オプション(空 ISO パス・非既定リソースプール)を破壊操作の
+// 前に弾くことを検証する。attach まで遅れると部分適用で state 乖離する (レビュー #66)。
+func TestValidateDvdOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		pool    string
+		wantErr bool
+	}{
+		{"正常: ISO+既定プール", `H:\ISO\talos.iso`, "Primordial", false},
+		{"正常: プール空文字も既定扱い", `H:\ISO\talos.iso`, "", false},
+		{"拒否: 空メディア(パス空)", "", "Primordial", true},
+		{"拒否: 非既定プール", `H:\ISO\talos.iso`, "CustomPool", true},
+		{"拒否: パス空とプール両方不正でも弾く", "", "CustomPool", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDvdOptions(tt.path, tt.pool)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateDvdOptions(%q,%q): err=%v, wantErr=%v", tt.path, tt.pool, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestMapDvdDriveRefs は ISO(Virtual CD/DVD Disk)のみ復元し、VHD を除外することを検証する。
 func TestMapDvdDriveRefs(t *testing.T) {
 	vm := "11111111-aaaa-bbbb-cccc-000000000001"

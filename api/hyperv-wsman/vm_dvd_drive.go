@@ -24,13 +24,22 @@ type dvdDriveRef struct {
 	storageInstanceID string // Msvm_StorageAllocationSettingData (ISO) の InstanceID
 }
 
-// unsupportedDvdOptions は go-wsman 経路が未対応の DVD オプションを拒否する (silent drop 回避)。
+// validateDvdOptions は go-wsman 経路が未対応の DVD オプションを拒否する (silent drop 回避)。
 // 現状は既定リソースプール + ISO パス指定のみサポートする。
-func unsupportedDvdOptions(resourcePoolName string) error {
+//
+// path/pool の両方をここで検証するのが重要: Update / CreateOrUpdate は破壊操作 (detach) を
+// 実行してから attach するため、未対応値の検出が attach まで遅れると「detach 済み・attach 拒否」
+// の部分適用で state が乖離する。呼び出し側は必ず破壊操作の前に本関数で全件検証すること。
+func validateDvdOptions(path, resourcePoolName string) error {
 	if resourcePoolName != "" && resourcePoolName != dvdDefaultResourcePool {
 		return fmt.Errorf(
 			"hyperv-wsman: dvd_drive の resource_pool_name は go-wsman 経路 (HYPERV_USE_WSMAN) では未対応です。"+
 				"PowerShell 経路を使うか、既定値 %q にしてください", dvdDefaultResourcePool)
+	}
+	// 空メディア (ISO 未指定の DVD ドライブのみ追加) は go-wsman AttachDVD が storage を要求するため
+	// 現状未対応。ISO マウントに絞る。空メディア対応は v2.1 (#67)。
+	if path == "" {
+		return fmt.Errorf("hyperv-wsman: dvd_drive の ISO パス空 (メディアなし DVD) は go-wsman 経路では未対応です。空メディア対応は v2.1 (#67)")
 	}
 	return nil
 }
@@ -57,13 +66,8 @@ func (c *ClientConfig) CreateVmDvdDrive(
 	path string,
 	resourcePoolName string,
 ) error {
-	if err := unsupportedDvdOptions(resourcePoolName); err != nil {
-		return err
-	}
-	// 空メディア (ISO 未指定の DVD ドライブのみ追加) は go-wsman AttachDVD が storage を要求するため
-	// 現状未対応。ISO マウントに絞る (silent drop 回避のため明示的に拒否)。空メディア対応は v2.1。
-	if path == "" {
-		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: ISO パス空 (メディアなし DVD) は go-wsman 経路では未対応", vmName)
+	if err := validateDvdOptions(path, resourcePoolName); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
 	}
 	guid, err := c.resolveVMGUID(ctx, vmName)
 	if err != nil {
@@ -131,8 +135,10 @@ func (c *ClientConfig) UpdateVmDvdDrive(
 	path string,
 	resourcePoolName string,
 ) error {
-	if err := unsupportedDvdOptions(resourcePoolName); err != nil {
-		return err
+	// 破壊操作 (Delete) の前に検証する。attach 段階まで遅らせると Delete 成功後に Create が
+	// 拒否して部分適用になる (ISO が外れたまま失敗)。
+	if err := validateDvdOptions(path, resourcePoolName); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVmDvdDrive %q: %w", vmName, err)
 	}
 	if err := c.DeleteVmDvdDrive(ctx, vmName, index); err != nil {
 		return err
@@ -145,9 +151,11 @@ func (c *ClientConfig) UpdateVmDvdDrive(
 // go-wsman は attach/detach しか持たないため、集合差分で収束する: 現状にあって所望に無い ISO を
 // Detach、所望にあって現状に無い ISO を Attach する。冪等。
 func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName string, dvdDrives []api.VmDvdDrive) error {
+	// 未対応オプションは detach/attach を始める前に全件検証する。attach 段階で初めて弾くと、
+	// 先行する detach だけが実機に適用されて部分適用・state 乖離になる (レビュー #66)。
 	for _, d := range dvdDrives {
-		if err := unsupportedDvdOptions(d.ResourcePoolName); err != nil {
-			return err
+		if err := validateDvdOptions(d.Path, d.ResourcePoolName); err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmDvdDrives %q: %w", vmName, err)
 		}
 	}
 	current, err := c.getDvdDriveRefs(ctx, vmName)

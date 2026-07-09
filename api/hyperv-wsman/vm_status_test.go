@@ -4,7 +4,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
@@ -22,19 +21,22 @@ func TestClientConfig_ImplementsHypervVmStatusClient(t *testing.T) {
 	}
 }
 
-// TestEnabledStateToVmState は CIM EnabledState → provider VmState の変換を検証する。
-// Paused/Saved は CIM 値(32768/32769)と provider 値(9/6)が異なるので特に重要。
+// TestEnabledStateToVmState は Msvm_ComputerSystem.EnabledState → provider VmState の変換を検証する。
+// 値は実機ダンプ準拠 (Running=2 / Off=3 / Saved=6 / Paused=9)。go-wsman の CIM 標準定数
+// (Paused=32768/Saved=32769) は Msvm_ComputerSystem では返らないので Other に落ちる。
 func TestEnabledStateToVmState(t *testing.T) {
 	tests := []struct {
 		name string
 		in   uint16
 		want api.VmState
 	}{
-		{"Enabled→Running", hyperv.EnabledStateEnabled, api.VmState_Running},
-		{"Disabled→Off", hyperv.EnabledStateDisabled, api.VmState_Off},
-		{"Paused→Paused(9)", hyperv.EnabledStatePaused, api.VmState_Paused},
-		{"Saved→Saved(6)", hyperv.EnabledStateSaved, api.VmState_Saved},
-		{"Unknown→Other", hyperv.EnabledStateUnknown, api.VmState_Other},
+		{"2→Running", 2, api.VmState_Running},
+		{"3→Off", 3, api.VmState_Off},
+		{"9→Paused(実機値)", 9, api.VmState_Paused},
+		{"6→Saved(実機値)", 6, api.VmState_Saved},
+		{"0(Unknown)→Other", 0, api.VmState_Other},
+		{"32768(CIM Paused, 実機では来ない)→Other", 32768, api.VmState_Other},
+		{"4(Stopping遷移中)→Other", 4, api.VmState_Other},
 		{"未知値→Other", 12345, api.VmState_Other},
 	}
 	for _, tt := range tests {
@@ -43,6 +45,24 @@ func TestEnabledStateToVmState(t *testing.T) {
 				t.Errorf("enabledStateToVmState(%d) = %d, want %d", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestIsStableEnabledState は安定状態(Running=2/Off=3/Saved=6/Paused=9)と遷移中/未知を区別する
+// ことを検証する。状態変更の前に安定まで待つ判定の土台 (遷移中への RequestStateChange 拒否・
+// 再発行スパム防止)。値は実機ダンプ準拠。
+func TestIsStableEnabledState(t *testing.T) {
+	for _, s := range []uint16{2, 3, 6, 9} { // Running/Off/Saved/Paused
+		if !isStableEnabledState(s) {
+			t.Errorf("EnabledState=%d は安定のはず", s)
+		}
+	}
+	// 遷移中 (Stopping=4 / Starting=10 / Reset=11 / Saving=32773 / Pausing=32776 / Resuming=32777) と
+	// Unknown(0)、実機では来ない CIM 値(32768/32769) は不安定扱い。
+	for _, s := range []uint16{0, 4, 10, 11, 32768, 32769, 32773, 32776, 32777} {
+		if isStableEnabledState(s) {
+			t.Errorf("EnabledState=%d は遷移中/未知(不安定)のはず", s)
+		}
 	}
 }
 

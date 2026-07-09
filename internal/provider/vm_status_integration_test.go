@@ -101,7 +101,27 @@ func TestRealHostVmStatusWsman(t *testing.T) {
 	}
 	assertState("turnOff 後", api.VmState_Off)
 
-	// 5. graceful shutdown 検証: Talos を起動→heartbeat 待ち→shutdown(turnOff=false)。
+	// 5. Finding 2 検証: Paused から Off(turnOff=false) は TurnOffVM フォールバックで停止する。
+	//    (凍結ゲストに ShutdownVM を撃つと止まらないため、修正で強制停止に切り替えている)
+	t.Run("paused_to_off_fallback", func(t *testing.T) {
+		if err := cc.UpdateVmStatus(ctx, vmName, 120, 2, api.VmState_Running, false); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		assertState("start(paused検証用)", api.VmState_Running)
+		// PS で一時停止 (provider は running/off しか設定できないため PS で Paused を作る)。
+		if out := strings.TrimSpace(runPS("Suspend-VM -Name '" + vmName + "' -ErrorAction SilentlyContinue; (Get-VM -Name '" + vmName + "').State")); !strings.EqualFold(out, "Paused") {
+			t.Skipf("Suspend-VM で Paused にできず (state=%q)、フォールバック検証スキップ", out)
+		}
+		assertState("Suspend 後", api.VmState_Paused)
+		// turnOff=false でも Paused なので TurnOffVM フォールバック → Off に到達するはず。
+		if err := cc.UpdateVmStatus(ctx, vmName, 120, 2, api.VmState_Off, false); err != nil {
+			t.Fatalf("Paused→Off(graceful要求) がフォールバックで止まらない: %v", err)
+		}
+		assertState("Paused→Off 後", api.VmState_Off)
+		t.Log("[Finding2] OK: Paused から turnOff=false でも TurnOffVM フォールバックで Off へ")
+	})
+
+	// 6. graceful shutdown 検証: Talos を起動→heartbeat 待ち→shutdown(turnOff=false)。
 	//    Integration Services 経由なので、Talos の hv_utils が上がってから要求する。
 	t.Run("graceful_shutdown", func(t *testing.T) {
 		if out := strings.TrimSpace(runPS("if (Test-Path -LiteralPath '" + isoPath + "') {'yes'} else {'no'}")); out != "yes" {

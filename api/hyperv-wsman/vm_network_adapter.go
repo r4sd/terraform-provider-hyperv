@@ -281,9 +281,27 @@ func (c *ClientConfig) CreateOrUpdateVmNetworkAdapters(ctx context.Context, vmNa
 	return nil
 }
 
-// WaitForVmNetworkAdaptersIps は go-wsman 経路では未実装のため PowerShell 実装にフォールバックする。
-// (ゲスト IP 取得は KVP/統合サービス依存。埋め込んだ hyperv_winrm.ClientConfig が処理する。)
-// —— 明示定義しないことで promotion による PowerShell フォールバックを効かせる。
+// WaitForVmNetworkAdaptersIps は全 NIC が wait_for_ips=false のとき PowerShell 呼び出しを省く。
+//
+// go-wsman はゲスト IP 取得 (KVP/Msvm_GuestNetworkAdapterConfiguration) を持たないため、実際に
+// IP 待ちが要る場合のみ埋め込んだ winrm 実装 (PS) に委譲する。1 つでも wait_for_ips=true があれば
+// 従来どおり PS で待機し、全て false なら PS を出さず即 return して strict mode (PS 0 件) を満たす。
+// winrm 実装はリストが非空なら中身が false でも PS を流すため、homelab (wait_for_ips=false×2 の
+// 非空リスト) を「空リスト時スキップ」ではカバーできない。「全 false ならスキップ」が正。
+func (c *ClientConfig) WaitForVmNetworkAdaptersIps(
+	ctx context.Context,
+	vmName string,
+	timeout uint32,
+	pollPeriod uint32,
+	vmNetworkAdaptersWaitForIps []api.VmNetworkAdapterWaitForIp,
+) error {
+	for _, w := range vmNetworkAdaptersWaitForIps {
+		if w.WaitForIps {
+			return c.ClientConfig.WaitForVmNetworkAdaptersIps(ctx, vmName, timeout, pollPeriod, vmNetworkAdaptersWaitForIps)
+		}
+	}
+	return nil
+}
 
 // --- 純関数 (table-driven test 対象) ---
 

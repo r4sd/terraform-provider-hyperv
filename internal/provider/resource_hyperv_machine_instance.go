@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -1189,9 +1190,16 @@ func resourceHyperVMachineInstanceRead(ctx context.Context, d *schema.ResourceDa
 
 	vm, err := client.GetVm(ctx, name)
 	if err != nil {
+		// go-wsman 経路は不在を api.ErrVMNotFound で返す。refresh 時に外部削除された
+		// VM は state から除去して再作成をトリガーする (winrm 経路の graceful 不在挙動と等価)。
+		if !d.IsNewResource() && errors.Is(err, api.ErrVMNotFound) {
+			d.SetId("")
+			return nil
+		}
 		return diag.FromErr(err)
 	}
 
+	// winrm 経路は不在時に空 Vm (Name=="") をエラーなしで返すため、こちらでも state 除去する。
 	if !d.IsNewResource() && vm.Name == "" {
 		d.SetId("")
 		return nil

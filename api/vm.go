@@ -4,9 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 )
+
+// ErrVMNotFound は指定名の VM が存在しないことを表す番兵エラー。
+//
+// 「不在」を「通信障害」と区別して返すために使う。provider 層はこれを errors.Is で判定し、
+// refresh 時に不在なら state から除去 (SetId("")) して再作成をトリガーする。
+// go-wsman の hyperv.ErrVMNotFound は api 境界 (hyperv-wsman) でこの番兵へ変換し、
+// provider を go-wsman 実装から疎に保つ (VmExists と同じ変換方針)。
+var ErrVMNotFound = errors.New("hyperv: vm not found")
 
 type CriticalErrorAction int
 

@@ -36,6 +36,11 @@ func (c *ClientConfig) VmExists(ctx context.Context, name string) (api.VmExists,
 func (c *ClientConfig) GetVm(ctx context.Context, name string) (api.Vm, error) {
 	cs, err := c.WsmanClient.FindComputerSystemByElementName(ctx, name)
 	if err != nil {
+		// go-wsman の不在エラーは api 境界で api.ErrVMNotFound へ変換し、provider が
+		// go-wsman に依存せず不在を判定できるようにする (VmExists と同じ方針)。
+		if errors.Is(err, hyperv.ErrVMNotFound) {
+			return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, api.ErrVMNotFound)
+		}
 		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, err)
 	}
 	sd, err := c.WsmanClient.GetSystemSettingData(ctx, cs.Name)

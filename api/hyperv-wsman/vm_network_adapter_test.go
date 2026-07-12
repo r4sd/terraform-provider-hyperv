@@ -1,6 +1,7 @@
 package hyperv_wsman
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -12,8 +13,9 @@ import (
 // api.HypervVmNetworkAdapterClient を実装することを検証する。
 //
 // CreateVmNetworkAdapter/GetVmNetworkAdapters/UpdateVmNetworkAdapter/DeleteVmNetworkAdapter/
-// CreateOrUpdateVmNetworkAdapters は本パッケージでシャドウイングする。
-// WaitForVmNetworkAdaptersIps は未実装で PowerShell にフォールバックする (意図的)。
+// CreateOrUpdateVmNetworkAdapters/WaitForVmNetworkAdaptersIps は本パッケージでシャドウイングする。
+// WaitForVmNetworkAdaptersIps は全 NIC が wait_for_ips=false のとき PS を省き、それ以外は
+// winrm 実装へ委譲する (#76)。
 func TestClientConfig_ImplementsHypervVmNetworkAdapterClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmNetworkAdapterClient = c // コンパイル時チェック
@@ -25,11 +27,45 @@ func TestClientConfig_ImplementsHypervVmNetworkAdapterClient(t *testing.T) {
 		"UpdateVmNetworkAdapter",
 		"DeleteVmNetworkAdapter",
 		"CreateOrUpdateVmNetworkAdapters",
+		"WaitForVmNetworkAdaptersIps",
 	} {
 		if _, ok := cType.MethodByName(methodName); !ok {
 			t.Errorf("メソッド %s が hyperv-wsman で定義されていない (シャドウイングされない)", methodName)
 		}
 	}
+}
+
+// TestWaitForVmNetworkAdaptersIps_SkipsWhenAllFalse は #76 のスキップ判定を検証する。
+//
+// 全 NIC が wait_for_ips=false (または空リスト) なら PS を出さず nil を返す。1 つでも true が
+// あれば埋め込んだ winrm 実装へ委譲する。委譲分岐では nil 埋め込みクライアントの参照で panic
+// することを利用し、「スキップせず委譲した」ことを確定的に確認する。
+func TestWaitForVmNetworkAdaptersIps_SkipsWhenAllFalse(t *testing.T) {
+	ctx := context.Background()
+	c := &ClientConfig{} // 埋め込み winrm も WsmanClient も nil
+
+	t.Run("空リストはスキップ", func(t *testing.T) {
+		if err := c.WaitForVmNetworkAdaptersIps(ctx, "vm", 0, 0, nil); err != nil {
+			t.Errorf("空リストで PS を出さず nil を期待、got %v", err)
+		}
+	})
+
+	t.Run("全 false はスキップ", func(t *testing.T) {
+		waits := []api.VmNetworkAdapterWaitForIp{{WaitForIps: false}, {WaitForIps: false}}
+		if err := c.WaitForVmNetworkAdaptersIps(ctx, "vm", 0, 0, waits); err != nil {
+			t.Errorf("全 false で PS を出さず nil を期待、got %v", err)
+		}
+	})
+
+	t.Run("1 つでも true なら winrm へ委譲する", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("wait_for_ips=true でスキップせず winrm 実装へ委譲することを期待 (nil クライアントで panic)")
+			}
+		}()
+		waits := []api.VmNetworkAdapterWaitForIp{{WaitForIps: false}, {WaitForIps: true}}
+		_ = c.WaitForVmNetworkAdaptersIps(ctx, "vm", 0, 0, waits)
+	})
 }
 
 // TestUnsupportedNetworkAdapterOptions は既定 NIC は許可、未対応フィールドが既定外なら error。

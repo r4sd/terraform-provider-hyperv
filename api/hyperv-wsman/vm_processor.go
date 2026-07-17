@@ -32,7 +32,9 @@ func (c *ClientConfig) GetVmProcessors(ctx context.Context, vmName string) ([]ap
 //
 // 単位変換 (CIM → PowerShell/provider 表現):
 //   - CIM AllocationUnits = "percent / 1000" のため Limit/Reservation は 0..100000。
-//     PS Maximum/Reserve は 0..100 (%) = CIM 値 / 1000。
+//     PS Maximum/Reserve は 0..100 (%) = CIM 値 / 1000。整数除算のため 1000 の倍数でない値
+//     (生 WMI 書き込み等) は切り捨てられるが、PS/Terraform 管理下の値は常に 1000 の倍数 (%整数)
+//     なので実運用で PS と乖離しない。
 //   - Weight (0..10000) は PS RelativeWeight と 1:1 (変換なし)。
 //   - LimitProcessorFeatures → CompatibilityForMigrationEnabled。
 //   - LimitCPUID → CompatibilityForOlderOperatingSystemsEnabled。

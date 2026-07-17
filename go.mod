@@ -9,7 +9,7 @@ require (
 	github.com/hashicorp/terraform-plugin-sdk/v2 v2.33.0
 	github.com/jolestar/go-commons-pool/v2 v2.1.2
 	github.com/masterzen/winrm v0.0.0-20220917170901-b07f6cb0598d
-	github.com/r4sd/go-wsman v0.0.0-20260716100323-c220112bcf5c
+	github.com/r4sd/go-wsman v0.0.0-20260717130224-7547c146378f
 	github.com/segmentio/ksuid v1.0.4
 )
 

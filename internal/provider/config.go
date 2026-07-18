@@ -31,6 +31,13 @@ func useWsmanEnabled() bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+// strictNoPSEnabled は strict モード (PS 呼び出し 0 件検証) の有効/無効を返す。
+// HYPERV_WSMAN_STRICT=1 かつ HYPERV_USE_WSMAN 有効時にのみ意味を持つ (呼び出し側で and 判定)。
+func strictNoPSEnabled() bool {
+	v := os.Getenv("HYPERV_WSMAN_STRICT")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 type Config struct {
 	Version          string
 	Commit           string
@@ -245,6 +252,17 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 	// 未移行メソッドは winrmConfig 経由で従来の PowerShell 実装にフォールバックする。
 	if useWsmanEnabled() {
 		log.Printf("[INFO][hyperv] HYPERV_USE_WSMAN enabled. Using go-wsman client for migrated resources.")
+
+		// strict モード: HYPERV_WSMAN_STRICT=1 で PS フォールバックを fail-fast スタブに差し替える。
+		// go-wsman シャドウ未実装の経路が 1 件でも呼ばれたら即エラーにし、v2.0「Home-env PS-free」の
+		// 陽性証明(homelab が使う経路の PS 呼び出し 0 件)を検証できるようにする。書き込み系の一部
+		// (processor/IS/firmware)はまだ PS フォールバックのため、この状態で create/update すると
+		// strict エラーになる(=まだ full-lifecycle PS-free ではないことの明示)。refresh/plan は PS-0。
+		if strictNoPSEnabled() {
+			log.Printf("[WARN][hyperv] HYPERV_WSMAN_STRICT enabled. PowerShell フォールバックは全て fail-fast エラーになります。")
+			winrmConfig.WinRmClient = &hyperv_wsman.StrictNoPSClient{}
+		}
+
 		wsmanClient, err := newWsmanClient(config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize go-wsman client: %w", err)

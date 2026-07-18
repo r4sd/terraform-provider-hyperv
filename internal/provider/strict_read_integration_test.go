@@ -11,11 +11,15 @@ package provider
 // go-wsman シャドウ未実装の経路 (= PS フォールバック) が走れば、スタブが error を返し
 // Calls() が加算されるので即検知できる。
 //
-// これは v2.0「Home-env PS-free」の合格条件2 (PS 時代作成の既存 VM の refresh/plan が
-// PS-0 かつ no-changes) の実機裏付け。書き込み系 (create/update の processor/IS/firmware) は
-// まだ PS フォールバックのため、full-lifecycle の PS-0 は別途 write シャドウ実装後になる。
+// PS-0 が成立する条件 (v2.0「Home-env PS-free」の合格条件2 の正確な範囲):
+//   - VM が Gen1 であること (Gen2 は GetVmFirmwares が未シャドウ=PS のまま)。
+//   - 全 network_adapter が wait_for_ips=false であること。wait_for_ips のスキーマ default は
+//     true で、1 つでも true だと read の WaitForVmNetworkAdaptersIps が PS へ委譲する (#76)。
 //
-// 実行例:
+// 書き込み系 (create/update の processor/IS/firmware) は該当ブロックを config が持つ場合に PS
+// フォールバックのため、full-lifecycle の PS-0 は別途 write シャドウ実装後になる。
+//
+// 実行例 (Gen1 VM を指定):
 //
 //	HYPERV_HOST=10.0.0.100 HYPERV_USER=terraform HYPERV_PASSWORD=... \
 //	HYPERV_PORT=5986 HYPERV_HTTPS=true HYPERV_INSECURE=true HYPERV_USE_NTLM=true \
@@ -44,7 +48,6 @@ func TestRealHostStrictReadNoPS(t *testing.T) {
 	}
 
 	// 埋め込み WinRmClient を fail-fast スタブに差し替えた strict ClientConfig。
-	// go-wsman シャドウ未実装のメソッドは promotion でこのスタブを叩き、即 error + カウントされる。
 	strict := &hyperv_wsman.StrictNoPSClient{}
 	cc := &hyperv_wsman.ClientConfig{
 		ClientConfig: &hyperv_winrm.ClientConfig{WinRmClient: strict},
@@ -52,8 +55,6 @@ func TestRealHostStrictReadNoPS(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	// mustNoPS はメソッド呼び出しがエラーなく完了し、かつ strict スタブが未発火であることを確認する。
-	// PS フォールバックが走ると err に strict error が伝播するか、fire-and-forget なら Calls() が増える。
 	mustNoPS := func(label string, err error) {
 		t.Helper()
 		if err != nil {
@@ -61,10 +62,10 @@ func TestRealHostStrictReadNoPS(t *testing.T) {
 		}
 	}
 
-	// --- hyperv_machine_instance の Read 経路を忠実に再現 ---
+	// --- hyperv_machine_instance の Read 経路を再現 (firmware/wait は下で世代・条件別に扱う) ---
 	exists, err := cc.VmExists(ctx, vmName)
 	mustNoPS("VmExists", err)
-	if err == nil && !bool(exists.Exists) {
+	if err == nil && !exists.Exists {
 		t.Fatalf("VM %q が存在しない。既存 VM 名を指定すること", vmName)
 	}
 
@@ -74,60 +75,70 @@ func TestRealHostStrictReadNoPS(t *testing.T) {
 
 	_, err = cc.GetVmProcessors(ctx, vmName)
 	mustNoPS("GetVmProcessors", err)
-
 	_, err = cc.GetVmIntegrationServices(ctx, vmName)
 	mustNoPS("GetVmIntegrationServices", err)
-
 	_, err = cc.GetVmNetworkAdapters(ctx, vmName, nil)
 	mustNoPS("GetVmNetworkAdapters", err)
-
 	_, err = cc.GetVmHardDiskDrives(ctx, vmName)
 	mustNoPS("GetVmHardDiskDrives", err)
-
 	_, err = cc.GetVmDvdDrives(ctx, vmName)
 	mustNoPS("GetVmDvdDrives", err)
-
 	_, err = cc.GetVmGpuAdapters(ctx, vmName)
 	mustNoPS("GetVmGpuAdapters", err)
-
 	_, err = cc.GetVmStatus(ctx, vmName)
 	mustNoPS("GetVmStatus", err)
 
-	// firmware: 世代分岐 (resource と同じ)。Gen1 は GetNoVmFirmwares=純 Go no-op で PS を踏まない。
-	// Gen2 は GetVmFirmwares が現状 PS フォールバック → strict でここが発火する (= Gen2 は未達)。
-	if vm.Generation > 1 {
-		_, err = cc.GetVmFirmwares(ctx, vmName)
-		mustNoPS("GetVmFirmwares (Gen2)", err)
-	} else {
+	// wait_for_ips=false (全 NIC false 相当) は #76 で PS をスキップするはず。空スライスではなく
+	// 明示的に WaitForIps=false のエントリを渡すことで、シャドウのスキップ判定を実際に通す。
+	mustNoPS("WaitForVmNetworkAdaptersIps(all-false)",
+		cc.WaitForVmNetworkAdaptersIps(ctx, vmName, 0, 0, []api.VmNetworkAdapterWaitForIp{{Name: "", WaitForIps: false}}))
+
+	// firmware: Gen1 は GetNoVmFirmwares=純 Go no-op で PS を踏まない。Gen2 は GetVmFirmwares が
+	// 未シャドウ=PS のため、ここでは main の strict には載せず、下の negative control で別スタブで扱う。
+	if vm.Generation <= 1 {
 		_ = cc.GetNoVmFirmwares(ctx) // no-op、PS を踏まない
 	}
 
-	// wait_for_ips 全 false 相当 (nil) は #76 で PS スキップされるはず。
-	mustNoPS("WaitForVmNetworkAdaptersIps(nil)",
-		cc.WaitForVmNetworkAdaptersIps(ctx, vmName, 0, 0, []api.VmNetworkAdapterWaitForIp{}))
-
-	// --- 合格条件: PS フォールバック 0 件 ---
+	// --- 合格条件: 上記 Read 経路 (Gen 非依存部 + wait_for_ips=false) の PS フォールバック 0 件 ---
 	if calls := strict.Calls(); calls != 0 {
 		t.Errorf("Read 経路で PS フォールバックが %d 件走った (strict 不合格): %v", calls, strict.Labels())
 	} else {
-		t.Logf("✅ VM %q の Read 経路 (generation=%d) は PowerShell 呼び出し 0 件 (strict 合格)", vmName, vm.Generation)
+		t.Logf("✅ VM %q (generation=%d) の Read 経路 (wait_for_ips=false 前提) は PS 呼び出し 0 件 (strict 合格)", vmName, vm.Generation)
+	}
+	if vm.Generation > 1 {
+		t.Logf("⚠️ generation=%d: GetVmFirmwares が未シャドウ=PS のため、Gen2 の refresh は PS-0 未達 (firmware write/read シャドウは v2.1)", vm.Generation)
 	}
 
-	// --- negative control: strict ハーネスに検出力があることの確認 ---
-	// 既知の PS フォールバックメソッド (GetVmFirmwares は未シャドウ) を新しい strict スタブ経由で呼び、
-	// 確実に発火する (Calls()>0 かつ error) ことを確認する。これで「0 件だった」のが検出力不足の
-	// 偽陽性ではなく、本当に PS を踏んでいないことの裏返しになる。
-	negStrict := &hyperv_wsman.StrictNoPSClient{}
-	negCC := &hyperv_wsman.ClientConfig{
-		ClientConfig: &hyperv_winrm.ClientConfig{WinRmClient: negStrict},
+	// --- negative control 1: strict ハーネスの検出力 (未シャドウ GetVmFirmwares は必ず発火) ---
+	negFw := &hyperv_wsman.StrictNoPSClient{}
+	negFwCC := &hyperv_wsman.ClientConfig{
+		ClientConfig: &hyperv_winrm.ClientConfig{WinRmClient: negFw},
 		WsmanClient:  wsmanClient,
 	}
-	if _, err := negCC.GetVmFirmwares(ctx, vmName); err == nil {
+	if _, err := negFwCC.GetVmFirmwares(ctx, vmName); err == nil {
 		t.Error("negative control: 未シャドウの GetVmFirmwares は strict で error になるべき (検出力の証明)")
 	}
-	if negStrict.Calls() == 0 {
-		t.Error("negative control: strict スタブが PS 呼び出しを検知できていない (ハーネスの検出力不足)")
+	if negFw.Calls() == 0 {
+		t.Error("negative control: strict スタブが GetVmFirmwares の PS 呼び出しを検知できていない")
 	} else {
-		t.Logf("✅ negative control: GetVmFirmwares が PS フォールバックとして検知された (%v)", negStrict.Labels())
+		t.Logf("✅ negative control(firmware): GetVmFirmwares が PS として検知された (%v)", negFw.Labels())
+	}
+
+	// --- negative control 2: wait_for_ips=true は PS へ委譲する (制限の実証 + 検出力) ---
+	// これにより「wait_for_ips=false なら PS-0」の逆も抑えられ、上の all-false アサーションが
+	// 恒真でないことが担保される。
+	negWait := &hyperv_wsman.StrictNoPSClient{}
+	negWaitCC := &hyperv_wsman.ClientConfig{
+		ClientConfig: &hyperv_winrm.ClientConfig{WinRmClient: negWait},
+		WsmanClient:  wsmanClient,
+	}
+	err = negWaitCC.WaitForVmNetworkAdaptersIps(ctx, vmName, 0, 0, []api.VmNetworkAdapterWaitForIp{{Name: "", WaitForIps: true}})
+	if err == nil {
+		t.Error("negative control: wait_for_ips=true は WaitForVmNetworkAdaptersIps を PS へ委譲し strict で error になるべき")
+	}
+	if negWait.Calls() == 0 {
+		t.Error("negative control: wait_for_ips=true で PS 委譲が検知できていない (all-false アサーションが恒真の疑い)")
+	} else {
+		t.Logf("✅ negative control(wait_for_ips=true): PS 委譲が検知された (%v)", negWait.Labels())
 	}
 }

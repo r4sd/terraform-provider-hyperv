@@ -5,15 +5,10 @@ import (
 	"strings"
 	"testing"
 	"text/template"
-
-	winrm_helper "github.com/taliesins/terraform-provider-hyperv/api/winrm-helper"
 )
 
-// TestStrictNoPSClient_ImplementsInterface は StrictNoPSClient が winrm_helper.Client を
-// 満たす (= WinRmClient として差し替え可能) ことをコンパイル時 + 実行時に確認する。
-func TestStrictNoPSClient_ImplementsInterface(t *testing.T) {
-	var _ winrm_helper.Client = &StrictNoPSClient{}
-}
+// (winrm_helper.Client の実装保証は strict.go 末尾の `var _ winrm_helper.Client` が担うため、
+// ここでの重複した実行時アサーションは持たない。)
 
 // TestStrictNoPSClient_FailsAndCounts は、どのメソッドが呼ばれても error を返し、
 // カウンタとラベルが正しく積まれることを検証する。fire-and-forget の error 握り潰し経路も

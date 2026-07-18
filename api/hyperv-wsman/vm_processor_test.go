@@ -103,6 +103,79 @@ func TestProcessorFromSettingData_Defaults(t *testing.T) {
 	}
 }
 
+// TestApplyProcessorSettings_RoundTrip は逆変換 (applyProcessorSettings) が read 変換
+// (processorFromSettingData) の逆になっていることを検証する。write→read で元の値に戻ること。
+func TestApplyProcessorSettings_RoundTrip(t *testing.T) {
+	want := api.VmProcessor{
+		VmName:                           "vm",
+		CompatibilityForMigrationEnabled: true,
+		CompatibilityForOlderOperatingSystemsEnabled: true,
+		HwThreadCountPerCore:                         2,
+		Maximum:                                      75, // → Limit 75000
+		Reserve:                                      25, // → Reservation 25000
+		RelativeWeight:                               200,
+		MaximumCountPerNumaNode:                      8,
+		MaximumCountPerNumaSocket:                    1,
+		EnableHostResourceProtection:                 true,
+		ExposeVirtualizationExtensions:               true,
+	}
+	// 現行設定を模した struct (InstanceID/VirtualQuantity は保持されること)。
+	p := &hyperv.Msvm_ProcessorSettingData{
+		InstanceID:      "Microsoft:vm-guid\\proc",
+		VirtualQuantity: 4,
+	}
+	applyProcessorSettings(p, want)
+
+	if p.InstanceID != "Microsoft:vm-guid\\proc" {
+		t.Errorf("InstanceID が保持されていない: %q", p.InstanceID)
+	}
+	if p.VirtualQuantity != 4 {
+		t.Errorf("VirtualQuantity (vCPU) が保持されていない: %d", p.VirtualQuantity)
+	}
+	if p.Limit != 75000 {
+		t.Errorf("Limit: got %d, want 75000 (Maximum×1000)", p.Limit)
+	}
+	if p.Reservation != 25000 {
+		t.Errorf("Reservation: got %d, want 25000 (Reserve×1000)", p.Reservation)
+	}
+	// read 変換で元の api.VmProcessor に戻ること (VmName を合わせて比較)。
+	got := processorFromSettingData("vm", p)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-trip mismatch:\n got=%+v\nwant=%+v", got, want)
+	}
+}
+
+// TestProcessorSettingsEqual は差分なしガードの判定を検証する (VmName は無視)。
+func TestProcessorSettingsEqual(t *testing.T) {
+	base := api.VmProcessor{Maximum: 100, Reserve: 0, RelativeWeight: 100}
+	sameDiffName := base
+	sameDiffName.VmName = "other"
+	if !processorSettingsEqual(base, sameDiffName) {
+		t.Error("VmName だけ違う場合は等しいと判定すべき")
+	}
+	diff := base
+	diff.Maximum = 50
+	if processorSettingsEqual(base, diff) {
+		t.Error("Maximum が違う場合は等しくないと判定すべき")
+	}
+}
+
+// TestCreateOrUpdateVmProcessors_Guards は空リスト no-op と複数エラーを検証する。
+// 空リストは WsmanClient を触らず nil を返す (nil ポインタでも panic しない=書き込み 0 件の担保)。
+func TestCreateOrUpdateVmProcessors_Guards(t *testing.T) {
+	c := &ClientConfig{} // WsmanClient も埋め込み winrm も nil
+	if err := c.CreateOrUpdateVmProcessors(t.Context(), "vm", nil); err != nil {
+		t.Errorf("空リストは no-op であるべき: %v", err)
+	}
+	if err := c.CreateOrUpdateVmProcessors(t.Context(), "vm", []api.VmProcessor{}); err != nil {
+		t.Errorf("空スライスは no-op であるべき: %v", err)
+	}
+	err := c.CreateOrUpdateVmProcessors(t.Context(), "vm", []api.VmProcessor{{}, {}})
+	if err == nil {
+		t.Error("2 件以上はエラーを返すべき")
+	}
+}
+
 // TestClampInt は縮小変換の上限丸めを検証する (gosec G115 回避の防御が機能すること)。
 func TestClampInt(t *testing.T) {
 	if got := clampInt64(math.MaxUint64); got != math.MaxInt64 {

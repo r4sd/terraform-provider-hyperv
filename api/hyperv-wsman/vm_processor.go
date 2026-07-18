@@ -60,14 +60,19 @@ func processorFromSettingData(vmName string, p *hyperv.Msvm_ProcessorSettingData
 // go-wsman の GetProcessorSettings で現行設定 (InstanceID 込み) を取得し、要求値を単位変換して
 // 反映し、SetProcessorSettings (ModifyResourceSettings) で書き戻す。
 //
-// 差分なしガード: 現行設定が要求値と一致するなら Set 自体をスキップする。homelab の大半は
-// Hyper-V 既定値 (Maximum=100/Reserve=0/Weight=100) をそのまま使うため、この場合は Get だけで
-// 書き込みが 0 件になり、strict モード (PS-0) を満たせる。
+// 3 分岐で「無用な書き込みの回避」と「go-wsman で表現できない変更の正しい委譲」を両立する:
 //
-// 制約 (marshalEmbeddedInstance のゼロ値非送信): 非既定値→0/false への「明示ダウングレード」は
-// go-wsman が embedded instance でゼロ値を送らない仕様のため表現できない。homelab は既定値運用で
-// 差分なしガードにより Set に到達しないため実害はない。非既定→既定へ戻す操作が必要になったら
-// go-wsman 側でゼロ値明示送信の対応が要る (v2.1)。
+//  1. NUMA 正規化: maximum_count_per_numa_node/socket は config 既定 0 = "Dynamic" で、CIM は
+//     ホスト解決済みの実値 (例: 論理プロセッサ数) を返す。要求 0 を現行値と等価に正規化する
+//     (resource の DiffSuppress・PS テンプレの「0→ホスト値」と同セマンティクス)。これをしないと
+//     既定 config でも毎回差分ありになり、strict PS-0 が成立しない。
+//  2. 差分なしガード: 正規化後に現行==要求なら Set をスキップ (書き込み 0 件)。homelab の既定値
+//     運用 (Maximum=100/Reserve=0/Weight=100/NUMA=Dynamic) はここで完結し strict モード (PS-0)。
+//  3. ゼロ/false ダウングレードの PS 委譲: 非ゼロ→0 や true→false の変更は、go-wsman の
+//     marshalEmbeddedInstance がゼロ値フィールドを送らない仕様のため CIM に反映されず「成功報告
+//     なのに変わらない=恒常 diff」になる。この遷移だけは正しく処理できる PS 実装へフォールバック
+//     する (strict モードではこの経路が PS 呼び出しとして検知される=未達の明示)。go-wsman 側で
+//     ゼロ値明示送信を実装したらこの分岐を外せる (v2.1)。
 func (c *ClientConfig) CreateOrUpdateVmProcessors(ctx context.Context, vmName string, vmProcessors []api.VmProcessor) error {
 	if len(vmProcessors) == 0 {
 		return nil
@@ -75,7 +80,6 @@ func (c *ClientConfig) CreateOrUpdateVmProcessors(ctx context.Context, vmName st
 	if len(vmProcessors) > 1 {
 		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmProcessors %q: only 1 vm processor setting allowed per a vm", vmName)
 	}
-	want := vmProcessors[0]
 
 	guid, err := c.resolveVMGUID(ctx, vmName)
 	if err != nil {
@@ -85,13 +89,29 @@ func (c *ClientConfig) CreateOrUpdateVmProcessors(ctx context.Context, vmName st
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmProcessors %q: get: %w", vmName, err)
 	}
+	currentApi := processorFromSettingData(vmName, current)
 
-	// 差分なしなら Set 省略 (書き込み 0 件)。
-	if processorSettingsEqual(processorFromSettingData(vmName, current), want) {
+	// 1. NUMA 0=Dynamic の正規化 (現行の解決済み値と等価扱い)。
+	want := vmProcessors[0]
+	norm := want
+	if norm.MaximumCountPerNumaNode == 0 {
+		norm.MaximumCountPerNumaNode = currentApi.MaximumCountPerNumaNode
+	}
+	if norm.MaximumCountPerNumaSocket == 0 {
+		norm.MaximumCountPerNumaSocket = currentApi.MaximumCountPerNumaSocket
+	}
+
+	// 2. 差分なしガード。
+	if processorSettingsEqual(currentApi, norm) {
 		return nil
 	}
 
-	applyProcessorSettings(current, want)
+	// 3. ゼロ/false ダウングレードは PS へ委譲 (go-wsman では表現不可)。元の要求値をそのまま渡す。
+	if hasZeroDowngrade(currentApi, norm) {
+		return c.ClientConfig.CreateOrUpdateVmProcessors(ctx, vmName, vmProcessors)
+	}
+
+	applyProcessorSettings(current, norm)
 	jobRef, err := c.WsmanClient.SetProcessorSettings(ctx, current)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmProcessors %q: set: %w", vmName, err)
@@ -100,6 +120,20 @@ func (c *ClientConfig) CreateOrUpdateVmProcessors(ctx context.Context, vmName st
 		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmProcessors %q: wait: %w", vmName, err)
 	}
 	return nil
+}
+
+// hasZeroDowngrade は want が current に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。
+// これらは marshalEmbeddedInstance のゼロ値非送信により go-wsman では反映できないため、PS 委譲の
+// 判定に使う。NUMA フィールドは呼び出し側で現行値に正規化済みのため対象外。
+func hasZeroDowngrade(current, want api.VmProcessor) bool {
+	return (want.Maximum == 0 && current.Maximum != 0) ||
+		(want.Reserve == 0 && current.Reserve != 0) ||
+		(want.RelativeWeight == 0 && current.RelativeWeight != 0) ||
+		(want.HwThreadCountPerCore == 0 && current.HwThreadCountPerCore != 0) ||
+		(!want.CompatibilityForMigrationEnabled && current.CompatibilityForMigrationEnabled) ||
+		(!want.CompatibilityForOlderOperatingSystemsEnabled && current.CompatibilityForOlderOperatingSystemsEnabled) ||
+		(!want.EnableHostResourceProtection && current.EnableHostResourceProtection) ||
+		(!want.ExposeVirtualizationExtensions && current.ExposeVirtualizationExtensions)
 }
 
 // applyProcessorSettings は要求 api.VmProcessor を Msvm_ProcessorSettingData に反映する

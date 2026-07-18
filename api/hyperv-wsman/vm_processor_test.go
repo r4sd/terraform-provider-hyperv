@@ -160,6 +160,34 @@ func TestProcessorSettingsEqual(t *testing.T) {
 	}
 }
 
+// TestHasZeroDowngrade は「非ゼロ→0」「true→false」の遷移検出を検証する。これらは go-wsman の
+// ゼロ値非送信で反映できないため PS 委譲されるべきケース。
+func TestHasZeroDowngrade(t *testing.T) {
+	cur := api.VmProcessor{
+		Maximum: 50, Reserve: 10, RelativeWeight: 200, HwThreadCountPerCore: 2,
+		CompatibilityForMigrationEnabled: true, ExposeVirtualizationExtensions: true,
+	}
+	cases := []struct {
+		name string
+		want api.VmProcessor
+		down bool
+	}{
+		{"reserve 10→0", api.VmProcessor{Maximum: 50, Reserve: 0, RelativeWeight: 200, HwThreadCountPerCore: 2, CompatibilityForMigrationEnabled: true, ExposeVirtualizationExtensions: true}, true},
+		{"exposeVirt true→false", api.VmProcessor{Maximum: 50, Reserve: 10, RelativeWeight: 200, HwThreadCountPerCore: 2, CompatibilityForMigrationEnabled: true, ExposeVirtualizationExtensions: false}, true},
+		{"compat true→false", api.VmProcessor{Maximum: 50, Reserve: 10, RelativeWeight: 200, HwThreadCountPerCore: 2, CompatibilityForMigrationEnabled: false, ExposeVirtualizationExtensions: true}, true},
+		{"hwThread 2→0", api.VmProcessor{Maximum: 50, Reserve: 10, RelativeWeight: 200, HwThreadCountPerCore: 0, CompatibilityForMigrationEnabled: true, ExposeVirtualizationExtensions: true}, true},
+		{"maximum 50→75 (upgrade)", api.VmProcessor{Maximum: 75, Reserve: 10, RelativeWeight: 200, HwThreadCountPerCore: 2, CompatibilityForMigrationEnabled: true, ExposeVirtualizationExtensions: true}, false},
+		{"reserve 10→20 (non-zero)", api.VmProcessor{Maximum: 50, Reserve: 20, RelativeWeight: 200, HwThreadCountPerCore: 2, CompatibilityForMigrationEnabled: true, ExposeVirtualizationExtensions: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasZeroDowngrade(cur, tc.want); got != tc.down {
+				t.Errorf("hasZeroDowngrade: got %v, want %v", got, tc.down)
+			}
+		})
+	}
+}
+
 // TestCreateOrUpdateVmProcessors_Guards は空リスト no-op と複数エラーを検証する。
 // 空リストは WsmanClient を触らず nil を返す (nil ポインタでも panic しない=書き込み 0 件の担保)。
 func TestCreateOrUpdateVmProcessors_Guards(t *testing.T) {

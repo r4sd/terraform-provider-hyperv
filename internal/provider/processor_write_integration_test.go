@@ -79,6 +79,8 @@ func TestRealHostProcessorWriteWsman(t *testing.T) {
 		t.Errorf("baseline Maximum: got %d, want 100 (Hyper-V 既定)", baseline.Maximum)
 	}
 
+	t.Logf("baseline NUMA: node=%d socket=%d (0 なら正規化は自明、非0なら正規化が効く)", baseline.MaximumCountPerNumaNode, baseline.MaximumCountPerNumaSocket)
+
 	// skip-guard: 現行値と同じ要求は Set を流さず no-op。値が変わらないこと。
 	if err := cc.CreateOrUpdateVmProcessors(ctx, vmName, []api.VmProcessor{baseline}); err != nil {
 		t.Fatalf("CreateOrUpdateVmProcessors(same): %v", err)
@@ -86,6 +88,20 @@ func TestRealHostProcessorWriteWsman(t *testing.T) {
 	if got := getOne("after-noop"); !processorEq(got, baseline) {
 		t.Errorf("skip-guard 後に値が変わった: got=%+v baseline=%+v", got, baseline)
 	}
+
+	// NUMA 正規化 (Fable F-1): 既定 config は maximum_count_per_numa_node/socket=0 を渡すが、CIM は
+	// ホスト解決済みの実値を返す。正規化により「0 = 現行値」と扱われ、既定 config でも差分なしガードが
+	// 効いて Set が走らないこと (= strict PS-0 が既定運用で成立すること) を実機で確認する。
+	defaultNuma := baseline
+	defaultNuma.MaximumCountPerNumaNode = 0
+	defaultNuma.MaximumCountPerNumaSocket = 0
+	if err := cc.CreateOrUpdateVmProcessors(ctx, vmName, []api.VmProcessor{defaultNuma}); err != nil {
+		t.Fatalf("CreateOrUpdateVmProcessors(default-numa): %v", err)
+	}
+	if got := getOne("after-default-numa"); !processorEq(got, baseline) {
+		t.Errorf("NUMA=0 正規化が効かず値が変わった: got=%+v baseline=%+v", got, baseline)
+	}
+	t.Logf("✅ NUMA=0 正規化: 既定 config 相当でも差分なしガードで no-op (strict PS-0 の前提が実機で成立)")
 
 	// mutation: Maximum/Reserve/RelativeWeight を変更 → SetProcessorSettings が走る。
 	want := baseline

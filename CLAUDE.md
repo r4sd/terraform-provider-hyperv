@@ -7,7 +7,7 @@ taliesins/terraform-provider-hyperv の soft-fork(module path は taliesins の�
 (Go ネイティブ WS-Man/CIM クライアント)へ段階移行している。位置づけ=**ほぼ自分用 + 学習**の
 趣味プロジェクト(使命感・完遂ノルマなし)。実運用 provider が要る時の選択肢は windsorcli/hyperv。
 
-- 移行の現況(living doc): Obsidian `20-Projects/terraform-provider-hyperv/migration-status.md`
+- 移行の現況: living status doc をユーザーの個人ナレッジ管理側で維持している(詳細はユーザーに確認)。
 - go-wsman 側のコーディング規約: go-wsman リポジトリの `CLAUDE.md`(CIM 命名・MOF 一次資料検証・
   TDD サイクル・golden 規約)。**このファイルは主に provider 側 shadow 移行の DoD を定義する。**
 
@@ -77,6 +77,6 @@ framework。Slice A(vm_processor write)を型として蒸留(2026-07-19)。**新
 - 個人リポ(private)。commit/push/PR 可。merge は原則ユーザー判断を仰ぐ(スコープ確認が要る PR は特に)。
 - コミットは Conventional Commits(prefix 英語、説明日本語可)。PR 本文に工数・handoff・memory 等の
   内部メタは書かない(`feedback_pr_no_estimates` (memory))。
-- 実機 acc test の接続: Mac は homelab LAN 内、Hyper-V ホスト `10.0.0.100:5986`。資格情報は
-  `~/repos/private/homelab-infra/terraform/hyperv/.envrc` の `TF_VAR_hyperv_password` を source。
-  env: `HYPERV_USER=terraform HYPERV_PORT=5986 HYPERV_HTTPS=true HYPERV_INSECURE=true HYPERV_USE_NTLM=true`。
+- 実機 acc test の接続: `HYPERV_HOST` / `HYPERV_USER` / `HYPERV_PASSWORD` / `HYPERV_PORT` /
+  `HYPERV_HTTPS` / `HYPERV_INSECURE` / `HYPERV_USE_NTLM` を環境変数で渡す(値・資格情報の
+  ソースはユーザーのローカル環境依存、ここには書かない)。詳細な接続手順が必要な場合はユーザーに確認する。

@@ -31,6 +31,13 @@ func useWsmanEnabled() bool {
 	return v == "1" || strings.EqualFold(v, "true")
 }
 
+// strictNoPSEnabled は strict モード (PS 呼び出し 0 件検証) の有効/無効を返す。
+// HYPERV_WSMAN_STRICT=1 かつ HYPERV_USE_WSMAN 有効時にのみ意味を持つ (呼び出し側で and 判定)。
+func strictNoPSEnabled() bool {
+	v := os.Getenv("HYPERV_WSMAN_STRICT")
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 type Config struct {
 	Version          string
 	Commit           string
@@ -245,6 +252,20 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 	// 未移行メソッドは winrmConfig 経由で従来の PowerShell 実装にフォールバックする。
 	if useWsmanEnabled() {
 		log.Printf("[INFO][hyperv] HYPERV_USE_WSMAN enabled. Using go-wsman client for migrated resources.")
+
+		// strict モード: HYPERV_WSMAN_STRICT=1 で PS フォールバックを fail-fast スタブに差し替える。
+		// go-wsman シャドウ未実装の経路が 1 件でも呼ばれたら即エラーにし、v2.0「Home-env PS-free」の
+		// 陽性証明(homelab が使う経路の PS 呼び出し 0 件)を検証できるようにする。
+		//
+		// 現状で PS-0 になる範囲: Gen1 VM かつ全 network_adapter が wait_for_ips=false の refresh/plan。
+		// PS フォールバックが残る経路(strict でエラーになる): Gen2 の firmware read(GetVmFirmwares 未
+		// シャドウ)、wait_for_ips=true(WaitForVmNetworkAdaptersIps が PS 委譲、#76)、vm_processor/
+		// integration_services ブロックを持つ config の create/update 書き込み(空でなければ PS)。
+		if strictNoPSEnabled() {
+			log.Printf("[WARN][hyperv] HYPERV_WSMAN_STRICT enabled. PowerShell フォールバックは全て fail-fast エラーになります。")
+			winrmConfig.WinRmClient = &hyperv_wsman.StrictNoPSClient{}
+		}
+
 		wsmanClient, err := newWsmanClient(config)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize go-wsman client: %w", err)

@@ -51,7 +51,7 @@ framework。Slice A(vm_processor write)を型として蒸留(2026-07-19)。**新
 - [ ] **TDD 先行**: RED を確認してから実装(`feedback_tdd_first_default` (memory))。
 - [ ] コメントは **WHY**(単位・契約・非自明な制約)。コードを言い換える WHAT は書かない。
 - [ ] 実機 acc test を **1 回は実行して GREEN を確認**(CI 非実行のためログを PR に残す)。
-- [ ] **Fable 敵対レビュー**を実施し、致命指摘は merge 前に反映。
+- [ ] **Fable 敵対レビュー**を実施し、致命指摘は merge 前に反映。**プロンプトは過度な手順書きをせず、判定(CONFIRMED/REFUTED等)と結論を求める形にする**(Fable 系モデルは非手続き的な指示の方が出力品質が高い。手順は Claude 側=このパイプラインの実行者が担い、Fable には「何を検証するか」だけ渡す)。
 
 ## 4. この型が固めた shadow 特有の設計ルール(再発防止)
 

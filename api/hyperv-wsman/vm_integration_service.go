@@ -38,17 +38,16 @@ func (c *ClientConfig) GetVmIntegrationServices(ctx context.Context, vmName stri
 // CreateOrUpdateVmIntegrationServices は VM の統合サービス群を go-wsman 経由で書き込む。
 //
 // PS 版 (Enable-VMIntegrationService / Disable-VMIntegrationService) をシャドウイングし、
-// create/update の無条件 PowerShell 実行を解消する。integrationServices[].Name は Terraform
-// config の `integration_services` マップキー (英語固定、ホスト OS ロケールに依存しない) で、
-// go-wsman の IntegrationServiceComponent と同じ文字列集合 (Heartbeat / Key-Value Pair
-// Exchange / Shutdown / Time Synchronization / VSS / Guest Service Interface) なので直接
-// キャストできる。未知の名前は go-wsman 側が fail-loud でエラーを返す (PS が未知の
-// -Name を拒否するのと同じ失敗クラス)。
+// create/update の無条件 PowerShell 実行を解消する。`integration_services` は schema.TypeMap
+// (ValidateFunc なし) なので Terraform config 上は任意の文字列キーを書ける。実際に受理される
+// のは go-wsman の IntegrationServiceComponent と一致する 6 つの英語名 (Heartbeat / Key-Value
+// Pair Exchange / Shutdown / Time Synchronization / VSS / Guest Service Interface) のみで、
+// 未知の名前は go-wsman 側が fail-loud でエラーを返す (PS が未知の -Name を拒否するのと同じ
+// 失敗クラス。config バリデーションでの事前拒否ではなく apply 時のエラーである点に注意)。
 //
 // 差分なしガード: GetIntegrationServiceEnabled (ロケール非依存) で現行値を確認し、要求値と
-// 一致するなら Set をスキップする。homelab の既定 config (DefaultVmIntegrationServices が
-// Hyper-V 既定値と 1:1 対応) では create 時に書き込み 0 件になり strict モード (PS-0) を満たす
-// (Slice A の processor と同じ設計)。
+// 一致するなら Set をスキップする往復削減の最適化。strict モード (PS-0) はこのガードの成否とは
+// 無関係に、本メソッドが常に go-wsman 経由で書き込む (PS に委譲しない) ことで既に成立している。
 //
 // Enable/Disable/CreateOrUpdate 個別メソッドは埋め込み hyperv_winrm.ClientConfig からの
 // promotion では呼ばれない (resource 層は CreateOrUpdateVmIntegrationServices のみを呼ぶ) ため、

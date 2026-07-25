@@ -90,8 +90,12 @@ func TestRealHostIntegrationServiceWriteWsman(t *testing.T) {
 	}
 	t.Logf("baseline: %d 件の統合サービス", len(baseline))
 
-	// 差分なしガード: 既定 config (DefaultVmIntegrationServices) と同じ値を書くと Set が
-	// スキップされること (Slice A の processor と同じ設計)。
+	// 差分なしガード: 既定 config (DefaultVmIntegrationServices) と同じ値を渡してもエラーに
+	// ならず完走すること。Set が実際にスキップされたかどうか (往復回数) はこのアサーションでは
+	// 直接証明できない (同値の再 Set がエラーなく成功するケースと区別がつかない) — go-wsman 側は
+	// いずれにせよ書き込みを PS に委譲しないため、strict モード (PS-0) はこのガードの成否とは
+	// 無関係に成立している。ガード自体は往復削減の最適化であり、その発火有無を実機テストで確認
+	// するには HTTP リクエスト数を計測する仕組みが要る (このテストのスコープ外)。
 	defaults, err := api.DefaultVmIntegrationServices()
 	if err != nil {
 		t.Fatalf("DefaultVmIntegrationServices: %v", err)

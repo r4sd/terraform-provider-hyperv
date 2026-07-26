@@ -30,9 +30,11 @@ func (c *ClientConfig) VmExists(ctx context.Context, name string) (api.VmExists,
 // GetVm は go-wsman 経由で VM の構成情報を取得する。
 //
 // 表示名→GUID を解決し、Realized の Msvm_VirtualSystemSettingData を取得して api.Vm に
-// マッピングする。VM レベルの設定 (世代・自動アクション・Notes 等) のみを対象とし、
-// Memory/CPU は別途 Msvm_MemorySettingData / Msvm_ProcessorSettingData が必要なため
-// 本メソッドでは設定しない (vmFromSettingData の注記参照)。
+// マッピングする。Memory/ProcessorCount は別途 Msvm_MemorySettingData /
+// Msvm_ProcessorSettingData を取得して合成する (resource 層の read が
+// vm.DynamicMemory/StaticMemory の排他を検証するため必須。未設定のままだと両方 false の
+// ゼロ値になり「Either dynamic or static must be selected」で実機の全 VM read が失敗する、
+// 実運用移行の実機検証で発見)。
 func (c *ClientConfig) GetVm(ctx context.Context, name string) (api.Vm, error) {
 	cs, err := c.WsmanClient.FindComputerSystemByElementName(ctx, name)
 	if err != nil {
@@ -47,7 +49,57 @@ func (c *ClientConfig) GetVm(ctx context.Context, name string) (api.Vm, error) {
 	if err != nil {
 		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, err)
 	}
-	return vmFromSettingData(name, sd), nil
+	vm := vmFromSettingData(name, sd)
+
+	mem, err := c.WsmanClient.GetMemorySettings(ctx, cs.Name)
+	if err != nil {
+		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: memory: %w", name, err)
+	}
+	applyMemoryToVm(&vm, mem)
+
+	proc, err := c.WsmanClient.GetProcessorSettings(ctx, cs.Name)
+	if err != nil {
+		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: processor: %w", name, err)
+	}
+	vm.ProcessorCount = clampInt64(proc.VirtualQuantity)
+
+	return vm, nil
+}
+
+// applyMemoryToVm は Msvm_MemorySettingData から api.Vm のメモリ関連フィールドを埋める。
+// PS 版 (Get-VMMemory) と同じマッピング: DynamicMemory=DynamicMemoryEnabled /
+// StaticMemory=!DynamicMemoryEnabled / MemoryStartupBytes=VirtualQuantity /
+// MemoryMinimumBytes=Reservation / MemoryMaximumBytes=Limit (いずれも CIM は MB、api は byte)。
+// static memory でも Reservation/Limit は CIM 上 VirtualQuantity と同値で返る (Hyper-V の実装)。
+func applyMemoryToVm(vm *api.Vm, mem *hyperv.Msvm_MemorySettingData) {
+	vm.DynamicMemory = mem.DynamicMemoryEnabled
+	vm.StaticMemory = !mem.DynamicMemoryEnabled
+	vm.MemoryStartupBytes = mbToBytes(mem.VirtualQuantity)
+	vm.MemoryMinimumBytes = mbToBytes(mem.Reservation)
+	vm.MemoryMaximumBytes = mbToBytes(mem.Limit)
+}
+
+// mbToBytes は CIM の MB 単位を byte に変換する。int64 化前に上限をクランプし、
+// 縮小変換の上限チェックなし (CodeQL high) を回避する (clampInt64/clampUint32 と同じ理由)。
+func mbToBytes(mb uint64) int64 {
+	const maxMB = math.MaxInt64 / (1024 * 1024)
+	if mb > maxMB {
+		mb = maxMB
+	}
+	return int64(mb) * 1024 * 1024
+}
+
+// mbToBytesU64 は CIM の MB 単位を byte (uint64) に変換する。mbToBytes の uint64 版
+// (HighMemoryMappedIoSpace 等 uint64 フィールド用)。1024*1024 倍後の桁あふれを避けるため
+// 乗算前に MB 値の上限をクランプする (clampUint32 で uint32 へ絞るのはこの関数の戻り値=
+// バイト値に対して乗算後に適用する。MB の時点で uint32 に絞ると桁あふれと無関係に値を破壊するため
+// 誤り、必ず bytes 変換後に clampUint32 を掛けること)。
+func mbToBytesU64(mb uint64) uint64 {
+	const maxMB = math.MaxUint64 / (1024 * 1024)
+	if mb > maxMB {
+		mb = maxMB
+	}
+	return mb * 1024 * 1024
 }
 
 // vmFromSettingData は Msvm_VirtualSystemSettingData を api.Vm にマッピングする (純関数)。
@@ -66,15 +118,18 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) ap
 		Notes:                        strings.Join(sd.Notes, "\n"),
 		LockOnDisconnect:             lockOnDisconnectState(sd.LockOnDisconnect),
 		GuestControlledCacheTypes:    sd.GuestControlledCacheTypes,
-		HighMemoryMappedIoSpace:      sd.HighMmioGapSize,
-		LowMemoryMappedIoSpace:       clampUint32(sd.LowMmioGapSize),
-		SnapshotFileLocation:         sd.SnapshotDataRoot,
-		SmartPagingFilePath:          sd.SwapFileDataRoot,
+		// HighMmioGapSize/LowMmioGapSize は CIM 上 MB 単位だが api.Vm (PS版 Get-VM 由来) は
+		// byte 単位のため変換が必要 (実運用移行の実機検証で発見、変換漏れのまま plan すると
+		// 512(MB のまま)→536870912(正しい byte)の恒常 diff になる)。
+		HighMemoryMappedIoSpace: mbToBytesU64(sd.HighMmioGapSize),
+		LowMemoryMappedIoSpace:  clampUint32(mbToBytesU64(sd.LowMmioGapSize)),
+		SnapshotFileLocation:    sd.SnapshotDataRoot,
+		SmartPagingFilePath:     sd.SwapFileDataRoot,
 
 		// 以下は本メソッドでは未設定 (ゼロ値):
-		//   - Memory/CPU (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory,
-		//     ProcessorCount): Msvm_MemorySettingData / Msvm_ProcessorSettingData が
-		//     別途必要 (CreateVm/C-2 で対応)。
+		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount:
+		//     呼び出し側の GetVm が Msvm_MemorySettingData / Msvm_ProcessorSettingData を
+		//     別途取得し合成する (applyMemoryToVm / clampInt64(proc.VirtualQuantity))。
 		//   - AutomaticStartDelay / AutomaticCriticalErrorActionTimeout: CIM の
 		//     Duration/interval 文字列パースが必要。実機が返す実書式に合わせるため
 		//     acc test (Phase D) で実データ確認後に実装する。

@@ -5,11 +5,65 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
+
+// intervalISO8601Pattern は WS-Man の GET/PULL レスポンスが返す datetime(interval) 型の実機書式に
+// マッチする。実機確認 (2026-07-27、k8s-cp-01 read): "P0DT0H30M0S"。ISO 8601 duration 形式
+// (PnDTnHnMnS)。WS-Management が CIM datetime interval をレスポンス側で xs:duration に
+// マッピングするための wire format と考えられる。
+//
+// 書き込み方向 (embedded instance) は未実装 (#102 参照)。CIM-XML の TYPE 属性が Go の
+// string kind から一律 "string" と推論され (go-wsman hyperv/embedded.go の cimTypeName)、
+// この MOF 上 datetime 型のプロパティを "string" 型として送ると DefineSystem が
+// ErrorCode=32768 (Exception) で失敗することを実機確認済み。ISO 8601 / CIM ネイティブ形式
+// (ddddddddHHMMSS.mmmmmm:000) いずれの文字列内容でも同一エラーになるため、原因は文字列書式
+// ではなく TYPE 属性側。go-wsman 側に datetime 型を明示できる仕組み (cim タグ拡張等) が要る。
+var intervalISO8601Pattern = regexp.MustCompile(`^P(\d+)DT(\d+)H(\d+)M(\d+)S$`)
+
+// parseIntervalMinutes は datetime(interval) 型の文字列 (ISO 8601 形式、上記パターン参照) を
+// 分単位の int32 に変換する。AutomaticCriticalErrorActionTimeout は Hyper-V が分単位に丸める
+// 仕様 (MOF 記載) のため秒は通常 0 だが、端数があれば切り上げる (防御的)。空文字は 0 (未設定)
+// として扱う。
+func parseIntervalMinutes(s string) (int32, error) {
+	if s == "" {
+		return 0, nil
+	}
+	m := intervalISO8601Pattern.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("parseIntervalMinutes: unexpected format %q (want ISO 8601 PnDTnHnMnS)", s)
+	}
+	days, err1 := strconv.ParseInt(m[1], 10, 64)
+	hours, err2 := strconv.ParseInt(m[2], 10, 64)
+	minutes, err3 := strconv.ParseInt(m[3], 10, 64)
+	seconds, err4 := strconv.ParseInt(m[4], 10, 64)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return 0, fmt.Errorf("parseIntervalMinutes: failed to parse numeric fields in %q", s)
+	}
+	total := days*24*60 + hours*60 + minutes
+	if seconds > 0 {
+		total++
+	}
+	return clampInt32FromInt64(total), nil
+}
+
+// clampInt32FromInt64 は int64 を int32 に安全に縮小する (上限/下限超過はクランプ)。
+// 直接 int32(v) すると CodeQL が上限チェックなしの縮小変換 (high) として検出するため
+// (clampUint32/clampInt32 と同じ理由)。
+func clampInt32FromInt64(v int64) int32 {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(v)
+}
 
 // VmExists は go-wsman 経由で VM (表示名) の存在を確認する。
 //
@@ -50,6 +104,12 @@ func (c *ClientConfig) GetVm(ctx context.Context, name string) (api.Vm, error) {
 		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, err)
 	}
 	vm := vmFromSettingData(name, sd)
+
+	timeout, err := parseIntervalMinutes(sd.AutomaticCriticalErrorActionTimeout)
+	if err != nil {
+		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, err)
+	}
+	vm.AutomaticCriticalErrorActionTimeout = timeout
 
 	mem, err := c.WsmanClient.GetMemorySettings(ctx, cs.Name)
 	if err != nil {
@@ -127,12 +187,13 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) ap
 		SmartPagingFilePath:     sd.SwapFileDataRoot,
 
 		// 以下は本メソッドでは未設定 (ゼロ値):
-		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount:
-		//     呼び出し側の GetVm が Msvm_MemorySettingData / Msvm_ProcessorSettingData を
-		//     別途取得し合成する (applyMemoryToVm / clampInt64(proc.VirtualQuantity))。
-		//   - AutomaticStartDelay / AutomaticCriticalErrorActionTimeout: CIM の
-		//     Duration/interval 文字列パースが必要。実機が返す実書式に合わせるため
-		//     acc test (Phase D) で実データ確認後に実装する。
+		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount /
+		//     AutomaticCriticalErrorActionTimeout: 呼び出し側の GetVm が
+		//     Msvm_MemorySettingData / Msvm_ProcessorSettingData を別途取得して合成、
+		//     AutomaticCriticalErrorActionTimeout は sd.AutomaticCriticalErrorActionTimeout
+		//     (CIM datetime/interval 文字列) を parseIntervalMinutes で分に変換する。
+		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要だが go-wsman の
+		//     CIM 構造体に未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
 		//   - CheckpointType / AutomaticCheckpointsEnabled: v2.1 (#46) に延期。
 	}
 }
@@ -218,9 +279,9 @@ func needsTurnOff(state uint16) bool {
 // 自動 NIC/DVD は付かない想定)。parity 担保のため自動生成 NIC は防御的に削除する
 // (実際に生成されるかは Phase D 実機で確認)。
 //
-// 未適用 (GetVm と同じ理由で将来対応):
-//   - automaticStartDelay / automaticCriticalErrorActionTimeout: CIM Duration 文字列の
-//     エンコードが要る。実機書式を Phase D で確認後に対応。
+// 未適用:
+//   - automaticStartDelay: CIM Duration 文字列のエンコードが要るが go-wsman の CIM 構造体に
+//     未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
 //   - checkpointType / automaticCheckpointsEnabled: v2.1 (#46) に延期。
 func (c *ClientConfig) CreateVm(
 	ctx context.Context,
@@ -325,8 +386,7 @@ func (c *ClientConfig) CreateVm(
 // CIM の ModifySystemSettings はゼロ値フィールドを「変更なし」とみなすため、各フィールドは
 // 新しい値で上書きする (CreateVm と enum/メモリ変換ロジックを共有)。
 //
-// 未適用 (GetVm/CreateVm と同じ理由): automaticStartDelay /
-// automaticCriticalErrorActionTimeout (CIM Duration、Phase D) / checkpointType /
+// 未適用: automaticStartDelay (CreateVm と同じ理由、#102 スコープ外) / checkpointType /
 // automaticCheckpointsEnabled (v2.1)。
 func (c *ClientConfig) UpdateVm(
 	ctx context.Context,
@@ -489,6 +549,9 @@ func vmSettingDataForCreate(
 // enum は provider 整数値 = CIM 値 (GetVm/CreateVm と同前提)。空文字のパスと未指定のゼロ値は
 // marshalEmbeddedInstance が省略するため、Update (ModifySystemSettings) では「未指定=変更なし」
 // になる (CIM SettingData の慣習)。InstanceID 等の既存値は呼び出し側が保持する。
+//
+// AutomaticCriticalErrorActionTimeout の書き込みは未実装 (#102、intervalISO8601Pattern の
+// コメント参照)。
 func applyVmLevelSettings(
 	sd *hyperv.Msvm_VirtualSystemSettingData,
 	criticalErrorAction api.CriticalErrorAction,

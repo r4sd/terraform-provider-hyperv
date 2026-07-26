@@ -55,7 +55,7 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 		"",                            // path (既定の場所)
 		2,                             // generation (Gen2)
 		api.CriticalErrorAction_Pause, // automaticCriticalErrorAction
-		0,                             // automaticCriticalErrorActionTimeout
+		0,                             // automaticCriticalErrorActionTimeout (書き込み未実装 #102、CIM 既定 30 分になる)
 		api.StartAction_Nothing,       // automaticStartAction
 		0,                             // automaticStartDelay
 		api.StopAction_Save,           // automaticStopAction
@@ -102,14 +102,19 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 	if vm.AutomaticStartAction != api.StartAction_Nothing {
 		t.Errorf("AutomaticStartAction = %v, want Nothing", vm.AutomaticStartAction)
 	}
-	t.Logf("GetVm OK: gen=%d notes=%q start=%v stop=%v crit=%v",
-		vm.Generation, vm.Notes, vm.AutomaticStartAction, vm.AutomaticStopAction, vm.AutomaticCriticalErrorAction)
+	// 書き込みは未実装 (#102) のため CIM 既定値の 30 分になる。GetVm の read パースが
+	// 実機の生値 ("P0DT0H30M0S") を正しく解釈できていることの回帰ガード。
+	if vm.AutomaticCriticalErrorActionTimeout != 30 {
+		t.Errorf("AutomaticCriticalErrorActionTimeout = %d, want 30 (CIM 既定値、#102 read parse)", vm.AutomaticCriticalErrorActionTimeout)
+	}
+	t.Logf("GetVm OK: gen=%d notes=%q start=%v stop=%v crit=%v timeout=%d",
+		vm.Generation, vm.Notes, vm.AutomaticStartAction, vm.AutomaticStopAction, vm.AutomaticCriticalErrorAction, vm.AutomaticCriticalErrorActionTimeout)
 
 	// --- 4. Update → VM-level / Memory / Processor を変更 ---
 	if err := cc.UpdateVm(ctx, name,
 		api.CriticalErrorAction_Pause, // (None=0 はゼロ値省略で変更不可のため Pause 維持)
-		0,
-		api.StartAction_Start, // 変更: Nothing → Start
+		0,                             // automaticCriticalErrorActionTimeout (書き込み未実装 #102)
+		api.StartAction_Start,         // 変更: Nothing → Start
 		0,
 		api.StopAction_ShutDown, // 変更: Save → ShutDown
 		api.CheckpointType_Production,
@@ -145,8 +150,11 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 	if vm2.LockOnDisconnect != api.OnOffState_On {
 		t.Errorf("LockOnDisconnect after Update = %v, want On", vm2.LockOnDisconnect)
 	}
-	t.Logf("UpdateVm OK: notes=%q start=%v stop=%v lock=%v",
-		vm2.Notes, vm2.AutomaticStartAction, vm2.AutomaticStopAction, vm2.LockOnDisconnect)
+	if vm2.AutomaticCriticalErrorActionTimeout != 30 {
+		t.Errorf("AutomaticCriticalErrorActionTimeout after Update = %d, want 30 (書き込み未実装のため不変、#102)", vm2.AutomaticCriticalErrorActionTimeout)
+	}
+	t.Logf("UpdateVm OK: notes=%q start=%v stop=%v lock=%v timeout=%d",
+		vm2.Notes, vm2.AutomaticStartAction, vm2.AutomaticStopAction, vm2.LockOnDisconnect, vm2.AutomaticCriticalErrorActionTimeout)
 
 	// --- 6. Delete → Exists false ---
 	if err := cc.DeleteVm(ctx, name); err != nil {

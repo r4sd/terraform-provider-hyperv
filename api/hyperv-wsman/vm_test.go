@@ -367,6 +367,36 @@ func TestApplyMemoryToVm(t *testing.T) {
 	})
 }
 
+// TestParseIntervalMinutes は WS-Man の datetime(interval) 生文字列 (ISO 8601 duration 形式、
+// 実機確認 2026-07-27: "P0DT0H30M0S") を分単位に変換することを検証する。
+// MOF ドキュメント記載の COM/WMI ネイティブ形式 (ddddddddHHMMSS.mmmmmm:000) とは異なる実機実測値。
+func TestParseIntervalMinutes(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    int32
+		wantErr bool
+	}{
+		{"実機確認値 30分", "P0DT0H30M0S", 30, false},
+		{"0分 (即座に電源オフ)", "P0DT0H0M0S", 0, false},
+		{"空文字はゼロ扱い", "", 0, false},
+		{"時+分の合算 (1時間30分=90分)", "P0DT1H30M0S", 90, false},
+		{"日+時+分の合算 (1日2時間3分=1563分)", "P1DT2H3M0S", 1*24*60 + 2*60 + 3, false},
+		{"不正な書式はエラー", "not-a-duration", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseIntervalMinutes(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseIntervalMinutes(%q): err=%v, wantErr=%v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("parseIntervalMinutes(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestVmSettingDataForCreate は CreateVm パラメータ → Msvm_VirtualSystemSettingData
 // マッピング (GetVm の vmFromSettingData の逆) を検証する。
 func TestVmSettingDataForCreate(t *testing.T) {

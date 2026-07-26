@@ -289,6 +289,16 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 //   - provider 設定 insecure=false (デフォルト): 証明書検証あり
 //   - provider 設定 insecure=true: WithInsecureSkipVerify() で検証スキップ
 //     (homelab のように自己署名証明書を使う環境向け)
+// wsmanClientPoolSize は go-wsman クライアントの並行接続プールサイズ。
+//
+// NTLM はコネクション単位でハンドシェイクの状態を保持するプロトコルのため、単一の
+// コネクションプールを複数 goroutine で共有すると、あるリクエストのハンドシェイク中に
+// 別のリクエストが割り込み 401 になりうる (実機で Terraform 既定 parallelism=10 の並行
+// GetVhd 7 件が全滅、-parallelism=1 なら成功、と確認済み。go-wsman#117)。
+// Terraform の既定 `-parallelism` (10) に合わせておけば、明示指定なしの通常運用でも
+// プールが枯渇せず干渉が起きない。
+const wsmanClientPoolSize = 10
+
 func newWsmanClient(config *Config) (*gowsman.Client, error) {
 	scheme := "http"
 	if config.HTTPS {
@@ -304,5 +314,5 @@ func newWsmanClient(config *Config) (*gowsman.Client, error) {
 		opts = append(opts, gowsmanproto.WithInsecureSkipVerify())
 	}
 
-	return gowsman.NewClient(endpoint, opts...)
+	return gowsman.NewPooledClient(wsmanClientPoolSize, endpoint, opts...)
 }

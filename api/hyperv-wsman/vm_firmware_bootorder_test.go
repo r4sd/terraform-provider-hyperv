@@ -107,6 +107,25 @@ func TestResolveBootOrders_UnresolvedBootSource(t *testing.T) {
 	}
 }
 
+// TestResolveBootOrders_FileTypeUnsupported は BootSourceType=File (Windows Boot Manager、OS
+// インストール済み VM が持つ) の場合に silent drop せず明示エラーになることを検証する。実運用では
+// このエラーを受けて GetVmFirmware が PS へ委譲する (OS インストール済み VM の firmware read は
+// ほぼ確実に PS 委譲になる制約、vm_firmware_bootorder.go の doc コメント参照)。
+func TestResolveBootOrders_FileTypeUnsupported(t *testing.T) {
+	const vm = "11111111-aaaa-bbbb-cccc-000000000001"
+	fileDeviceID := `Microsoft:` + vm + `\boot-mgr-guid`
+	bootSourceOrder := []string{
+		`\\HOST\root\virtualization\v2:Msvm_BootSourceSettingData.InstanceID="` + fileDeviceID + `\B"`,
+	}
+	bootSources := []*hyperv.Msvm_BootSourceSettingData{
+		{InstanceID: fileDeviceID + `\B`, BootSourceType: hyperv.BootSourceTypeFile, BootSourceDescription: "Windows Boot Manager"},
+	}
+	_, err := resolveBootOrders(bootSourceOrder, bootSources, nil, nil, nil)
+	if err == nil {
+		t.Fatal("BootSourceType=File は未対応のため明示エラーになるべき")
+	}
+}
+
 // TestResolveBootOrders_Empty は空リストで no-op (nil, no error) を返すことを検証する。
 func TestResolveBootOrders_Empty(t *testing.T) {
 	got, err := resolveBootOrders(nil, nil, nil, nil, nil)

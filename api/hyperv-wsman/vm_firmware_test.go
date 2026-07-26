@@ -31,7 +31,7 @@ func TestSecureBootTemplateIdToName(t *testing.T) {
 		id   string
 		want string
 	}{
-		{"MicrosoftWindows (実機確認済み)", "1734C6E8-3154-4DDA-BA5F-A874CC483422", "MicrosoftWindows"},
+		{"MicrosoftWindows (実機確認済み)", secureBootTemplateMicrosoftWindowsGUID, "MicrosoftWindows"},
 		{"未知のGUIDはそのまま返す", "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000"},
 		{"空文字はそのまま返す", "", ""},
 	}
@@ -47,7 +47,7 @@ func TestSecureBootTemplateIdToName(t *testing.T) {
 func TestFirmwareFromSystemSettingData(t *testing.T) {
 	settings := &hyperv.Msvm_VirtualSystemSettingData{
 		SecureBoot:                   true,
-		SecureBootTemplateId:         "1734C6E8-3154-4DDA-BA5F-A874CC483422",
+		SecureBootTemplateId:         secureBootTemplateMicrosoftWindowsGUID,
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv6,
 		ConsoleMode:                  hyperv.ConsoleModeCOM1,
 		PauseAfterBootFailure:        true,

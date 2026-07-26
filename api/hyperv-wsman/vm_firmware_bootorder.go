@@ -11,11 +11,20 @@ import (
 // resolveBootOrders は Msvm_VirtualSystemSettingData.BootSourceOrder[] を api.Gen2BootOrder の
 // 順序付きリストに変換する。
 //
-// 実機確認済み (2026-07-26、Gen2 シェル VM): Msvm_BootSourceSettingData.InstanceID は対象デバイス
-// (NIC の Msvm_SyntheticEthernetPortSettingData、または Drive の Msvm_ResourceAllocationSettingData)
-// の InstanceID に "\B" を付けたものと完全一致する (NIC: "Microsoft:<VM>\<PortGUID>\B"、Drive:
+// 実機確認済み (2026-07-26、Gen2 シェル VM、NIC 1台+SCSI Controller 1台+DVD 1台の1パターンのみ):
+// Msvm_BootSourceSettingData.InstanceID は対象デバイス (NIC の
+// Msvm_SyntheticEthernetPortSettingData、または Drive の Msvm_ResourceAllocationSettingData) の
+// InstanceID に "\B" を付けたものと完全一致する (NIC: "Microsoft:<VM>\<PortGUID>\B"、DVD 経由 SCSI:
 // "Microsoft:<VM>\<CtrlGUID>\0\0\D\B")。BootSourceType (Network/Drive) で経路を分け、Drive の場合は
-// DVD/HardDisk のどちらかを driveInstanceID で突き合わせて種別を決める。
+// DVD/HardDisk のどちらかを driveInstanceID (CIM 上ホスト内一意なキー) で突き合わせて種別を決める
+// (dvdRefs/diskRefs は ResourceSubType で構築時点から排他なので誤分類は構造上起きない)。
+// **HardDiskDrive (VHD ブート) の相関は実機未検証**(go-wsman コードの対称性からの類推のみ)。
+//
+// File 型 (Windows Boot Manager、OS インストール済み Gen2 VM が持つ) は本関数では未対応で、
+// resolveOneBootOrder が明示エラーを返し呼び出し側 (GetVmFirmware) が PS へ委譲する。つまり
+// **OS インストール済みの Gen2 VM の firmware read は現状ほぼ確実に PS 委譲になる**(未インストールの
+// 使い捨て VM 等、Network/Drive のみで構成される場合だけ go-wsman 側で完結する)。PS 版もこの
+// File 型エントリを暗黙 drop する実装のため、委譲先の最終結果自体は変わらない。
 //
 // 対応するデバイスが見つからない場合は silent drop せず明示エラーにする (DoD: 黙って成功報告する
 // 実装は禁止)。BootOrders が欠落したまま Terraform に「空」を返すと、次回 apply で意図しない

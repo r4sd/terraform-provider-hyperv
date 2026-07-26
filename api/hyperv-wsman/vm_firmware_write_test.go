@@ -66,6 +66,40 @@ func TestFirmwareWriteNoop(t *testing.T) {
 	}
 }
 
+// TestFirmwareWriteNoop_BootSourceOrderFormatMismatch は current.BootSourceOrder (サーバが返す
+// 実機形式、ホスト前置+シングルバックスラッシュ) と want.bootSourceOrder (BootSourceRef=
+// wmiObjectPath が組み立てるクライアント側形式、ホスト前置なし+ダブルバックスラッシュエスケープ+
+// フォワードスラッシュ namespace) が、生文字列としては一致しなくても同じデバイスを指す限り
+// no-op と判定されることを検証する (Fable 指摘: 正規化なしでは差分なしガードが常に false になり
+// 機能しない)。
+func TestFirmwareWriteNoop_BootSourceOrderFormatMismatch(t *testing.T) {
+	current := &hyperv.Msvm_VirtualSystemSettingData{
+		// サーバ実機形式 (シングルバックスラッシュ、ホスト前置あり)。
+		BootSourceOrder: []string{
+			`\\HOST\root\virtualization\v2:Msvm_BootSourceSettingData.InstanceID="Microsoft:vm-guid\nic-guid\B"`,
+		},
+	}
+	want := firmwareCIMValues{
+		// クライアント側 (BootSourceRef/wmiObjectPath) 形式 (ダブルバックスラッシュ、ホスト前置なし、
+		// namespace がフォワードスラッシュ)。同じデバイスを指す。
+		bootSourceOrder: []string{
+			`root/virtualization/v2:Msvm_BootSourceSettingData.InstanceID="Microsoft:vm-guid\\nic-guid\\B"`,
+		},
+	}
+	if !firmwareWriteNoop(current, want) {
+		t.Error("形式が違うだけで同一デバイスを指す BootSourceOrder は no-op と判定されるべき")
+	}
+
+	wantDifferentDevice := firmwareCIMValues{
+		bootSourceOrder: []string{
+			`root/virtualization/v2:Msvm_BootSourceSettingData.InstanceID="Microsoft:vm-guid\\other-nic\\B"`,
+		},
+	}
+	if firmwareWriteNoop(current, wantDifferentDevice) {
+		t.Error("異なるデバイスを指す BootSourceOrder は no-op と判定されるべきではない")
+	}
+}
+
 // TestFirmwareZeroDowngrade は marshalEmbeddedInstance がゼロ値を送信しないために go-wsman では
 // 表現できない「非ゼロ→ゼロ」遷移を正しく検出することを検証する (Slice A Fable C と同型のリスク)。
 func TestFirmwareZeroDowngrade(t *testing.T) {

@@ -31,9 +31,12 @@ func secureBootTemplateIdToName(guid string) string {
 }
 
 // secureBootTemplateNameToGUID は secureBootTemplateIdToName の逆変換 (書き込み用)。
-// 空文字は「テンプレート未指定」として ""/true (delegate 判定に使う zero 値扱い)。既に GUID 形式の
-// 入力 (state からの再入力等) もそのまま通す。未知のシンボル名は ok=false を返し、呼び出し側が
-// PS 委譲を判断する材料にする (どの GUID を書けばよいか分からないため、当て推量で GUID を発行しない)。
+// 空文字は「テンプレート未指定」として ""/true (zero 値、firmwareZeroDowngrade が現行値との比較で
+// 判断する)。既知の GUID (secureBootTemplateMicrosoftWindowsGUID) そのものが入力された場合もそのまま
+// 通す (state からの再入力等)。それ以外の未知のシンボル名・未知の GUID は ok=false を返し、
+// 呼び出し側が PS 委譲を判断する材料にする (どの GUID を書けばよいか分からないため、当て推量で
+// GUID を発行しない。MicrosoftUEFICertificateAuthority 等の他テンプレートは未確認のため #99 で
+// 追跡)。
 func secureBootTemplateNameToGUID(name string) (guid string, ok bool) {
 	if name == "" {
 		return "", true

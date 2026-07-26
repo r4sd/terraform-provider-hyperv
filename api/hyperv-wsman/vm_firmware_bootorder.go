@@ -162,13 +162,42 @@ func resolveBootOrderDeviceID(
 ) (string, error) {
 	switch bo.Type {
 	case api.Gen2BootType_NetworkAdapter:
+		// PS 版 (Get/Set-VMFirmware テンプレート) と同じく Name→SwitchName→MacAddress の順で絞り込む
+		// (指定されたものだけをフィルタ条件にする)。Hyper-V の NIC 既定名は "Network Adapter" で
+		// 同名 NIC が複数存在しうるため、Name だけの一致で決め打つと違う NIC を誤って書き込む危険が
+		// ある (Fable 指摘、silent corruption)。一意に絞り込めない場合は明示エラーにして PS へ
+		// 委譲する (DoD: 黙って成功報告する実装は禁止)。
+		var matches []networkAdapterRef
 		for _, r := range nicRefs {
-			if r.adapter.Name == bo.NetworkAdapterName {
-				return r.portInstanceID, nil
+			if r.adapter.Name != bo.NetworkAdapterName {
+				continue
 			}
+			if bo.SwitchName != "" && r.adapter.SwitchName != bo.SwitchName {
+				continue
+			}
+			if bo.MacAddress != "" {
+				mac := ""
+				if !r.adapter.DynamicMacAddress {
+					mac = r.adapter.StaticMacAddress
+				}
+				if !strings.EqualFold(mac, bo.MacAddress) {
+					continue
+				}
+			}
+			matches = append(matches, r)
 		}
-		return "", fmt.Errorf(
-			"hyperv-wsman: boot order の NetworkAdapter %q に対応する NIC が見つかりません", bo.NetworkAdapterName)
+		switch len(matches) {
+		case 1:
+			return matches[0].portInstanceID, nil
+		case 0:
+			return "", fmt.Errorf(
+				"hyperv-wsman: boot order の NetworkAdapter %q (SwitchName=%q MacAddress=%q) に対応する NIC が見つかりません",
+				bo.NetworkAdapterName, bo.SwitchName, bo.MacAddress)
+		default:
+			return "", fmt.Errorf(
+				"hyperv-wsman: boot order の NetworkAdapter %q が複数 (%d件) の NIC に一致し一意に特定できません。SwitchName/MacAddress で絞り込んでください",
+				bo.NetworkAdapterName, len(matches))
+		}
 
 	case api.Gen2BootType_DvdDrive:
 		for _, r := range dvdRefs {

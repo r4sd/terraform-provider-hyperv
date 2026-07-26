@@ -47,13 +47,32 @@ func buildFirmwareCIMValues(
 
 // firmwareWriteNoop は current (現行 CIM 値) と want (書き込み要求値) が完全一致するかを返す。
 // 一致する場合は Set を省略できる (差分なしガード、homelab 既定運用の strict PS-0 維持)。
+//
+// BootSourceOrder は current (サーバが返す生の WMI 参照文字列、ホスト前置+バックスラッシュ区切りの
+// 実機形式) と want (BootSourceRef が組み立てるクライアント側参照文字列、wmiObjectPath はホスト
+// 前置なし+フォワードスラッシュ区切りの namespace) とで文字列表現が一致しない (Fable 指摘)。
+// 生文字列比較では常に不一致になり差分なしガードが機能しないため、両辺を
+// extractInstanceIDFromRef で素の InstanceID に正規化してから比較する。
 func firmwareWriteNoop(current *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) bool {
 	return current.SecureBoot == want.secureBoot &&
 		current.SecureBootTemplateId == want.secureBootTemplateGUID &&
 		current.NetworkBootPreferredProtocol == want.networkBootProtocol &&
 		current.ConsoleMode == want.consoleMode &&
 		current.PauseAfterBootFailure == want.pauseAfterBootFailure &&
-		stringSlicesEqual(current.BootSourceOrder, want.bootSourceOrder)
+		stringSlicesEqual(normalizedBootSourceOrder(current.BootSourceOrder), normalizedBootSourceOrder(want.bootSourceOrder))
+}
+
+// normalizedBootSourceOrder は BootSourceOrder[] の各要素を素の InstanceID に正規化する
+// (extractInstanceIDFromRef、firmwareWriteNoop の比較専用)。
+func normalizedBootSourceOrder(refs []string) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, len(refs))
+	for i, ref := range refs {
+		out[i] = extractInstanceIDFromRef(ref)
+	}
+	return out
 }
 
 // firmwareZeroDowngrade は current → want が「非ゼロ→ゼロ」の遷移を含むかを返す。

@@ -211,3 +211,40 @@ func TestResolveBootSourceRefs_Empty(t *testing.T) {
 		t.Errorf("got: %+v", got)
 	}
 }
+
+// TestResolveBootSourceRefs_AmbiguousNetworkAdapterName は同名 NIC が複数存在する場合
+// (Hyper-V の既定名 "Network Adapter" 等)、Name のみの一致で決め打たず明示エラーになることを
+// 検証する。Name だけで先頭一致させると違う NIC の InstanceID を誤って書き込む危険がある
+// (Fable 敵対レビュー指摘、silent corruption)。
+func TestResolveBootSourceRefs_AmbiguousNetworkAdapterName(t *testing.T) {
+	nicRefs := []networkAdapterRef{
+		{portInstanceID: "nic-1", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "Internet-sw"}},
+		{portInstanceID: "nic-2", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "internal-sw"}},
+	}
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "Network Adapter"},
+	}
+	_, err := resolveBootSourceRefs(func(string) string { return "" }, bootOrders, nicRefs, nil, nil)
+	if err == nil {
+		t.Fatal("Name だけで複数 NIC に一致する場合は明示エラーになるべき (silent corruption 回避)")
+	}
+}
+
+// TestResolveBootSourceRefs_DisambiguateBySwitchName は同名 NIC でも SwitchName を指定すれば
+// 一意に解決できることを検証する (PS 版 Set-VMFirmware テンプレートと同じ絞り込み)。
+func TestResolveBootSourceRefs_DisambiguateBySwitchName(t *testing.T) {
+	nicRefs := []networkAdapterRef{
+		{portInstanceID: "nic-1", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "Internet-sw"}},
+		{portInstanceID: "nic-2", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "internal-sw"}},
+	}
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "Network Adapter", SwitchName: "internal-sw"},
+	}
+	got, err := resolveBootSourceRefs(func(id string) string { return "REF:" + id }, bootOrders, nicRefs, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveBootSourceRefs: %v", err)
+	}
+	if len(got) != 1 || got[0] != "REF:nic-2" {
+		t.Errorf("got: %+v, want REF:nic-2 (internal-sw の NIC)", got)
+	}
+}

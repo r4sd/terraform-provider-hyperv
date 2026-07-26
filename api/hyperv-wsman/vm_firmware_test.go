@@ -93,15 +93,11 @@ func TestFirmwareFromSystemSettingData_Defaults(t *testing.T) {
 	}
 }
 
-// TestGetVmFirmware_DelegatesWhenBootSourceOrderNonEmpty は BootSourceOrder が非空 (ブート可能
-// デバイスが付いている Gen2 VM) の場合に、silent drop や広すぎる拒否をせず埋め込み PS (winrm) 実装へ
-// 委譲することを検証する (Fable レビュー指摘、#96)。委譲分岐では nil 埋め込みクライアントの参照で
-// panic することを利用し、「BootOrders を無視して空扱いにする」のではなく確実に委譲したことを確認する
-// (WaitForVmNetworkAdaptersIps と同じ確認手法)。
-//
-// GetSystemSettingData 自体は httptest サーバで実際に応答させ (WsmanClient は本物の *hyperv.Client)、
-// BootSourceOrder が非空の Msvm_VirtualSystemSettingData を返す。
-func TestGetVmFirmware_DelegatesWhenBootSourceOrderNonEmpty(t *testing.T) {
+// TestGetVmFirmware_DelegatesWhenBootOrderResolutionFails は BootSourceOrder 相関解決が失敗する
+// 場合 (このテストでは ListBootSources 自体をエラーにして強制する) に、silent drop も広すぎる拒否も
+// せず埋め込み PS (winrm) 実装へ委譲することを検証する。委譲分岐では nil 埋め込みクライアントの参照で
+// panic することを利用し、確実に委譲したことを確認する (WaitForVmNetworkAdaptersIps と同じ確認手法)。
+func TestGetVmFirmware_DelegatesWhenBootOrderResolutionFails(t *testing.T) {
 	const vmName = "vm-1"
 	const vmGUID = "11111111-aaaa-bbbb-cccc-000000000001"
 	const enumXML = `<?xml version="1.0" encoding="UTF-8"?>
@@ -136,6 +132,12 @@ func TestGetVmFirmware_DelegatesWhenBootSourceOrderNonEmpty(t *testing.T) {
 	responses := []string{enumXML, computerSystemPullXML, enumXML, settingDataPullXML}
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if callCount >= len(responses) {
+			// resolveVMGUID + GetSystemSettingData 分 (4 リクエスト) 以降、ListBootSources の
+			// Enumerate をエラーにして相関解決を強制的に失敗させ、PS 委譲分岐を確実に踏ませる。
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 		_, _ = w.Write([]byte(responses[callCount]))
 		callCount++

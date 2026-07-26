@@ -4,10 +4,24 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 
 	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
+
+// clampUint16 は int を uint16 に安全に縮小する (負値は 0、上限超過は MaxUint16 にクランプ)。
+// 直接 uint16(v) すると CodeQL が上限チェックなしの縮小変換 (high) として検出するため
+// (clampUint32 と同じ理由、vm.go 参照)。
+func clampUint16(v int) uint16 {
+	if v < 0 {
+		return 0
+	}
+	if v > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(v)
+}
 
 // firmwareCIMValues は CreateOrUpdateVmFirmware の要求パラメータを CIM (Msvm_VirtualSystemSettingData)
 // の形に変換した値。判定・適用ロジックをネットワーク呼び出しから切り離してテスト可能にするための型。
@@ -39,7 +53,7 @@ func buildFirmwareCIMValues(
 		secureBoot:             enableSecureBoot == api.OnOffState_On,
 		secureBootTemplateGUID: templateGUID,
 		networkBootProtocol:    protocol,
-		consoleMode:            uint16(consoleMode),
+		consoleMode:            clampUint16(int(consoleMode)),
 		pauseAfterBootFailure:  pauseAfterBootFailure == api.OnOffState_On,
 		bootSourceOrder:        bootSourceOrder,
 	}, resolvable

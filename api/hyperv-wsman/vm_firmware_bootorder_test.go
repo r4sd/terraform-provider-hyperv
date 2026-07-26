@@ -136,3 +136,115 @@ func TestResolveBootOrders_Empty(t *testing.T) {
 		t.Errorf("got: %+v", got)
 	}
 }
+
+// resolveBootSourceRefs (write 方向、resolveBootOrders の逆変換) のテスト。
+// bootSourceRefFunc は BootSourceRef(deviceInstanceID) の呼び出しをテスト内で検証可能にするための
+// 関数値 (go-wsman.Client を丸ごとモックする必要を避ける)。
+
+func TestResolveBootSourceRefs(t *testing.T) {
+	const vm = "11111111-aaaa-bbbb-cccc-000000000001"
+	nicDeviceID := `Microsoft:` + vm + `\nic-guid`
+	dvdDeviceID := `Microsoft:` + vm + `\ctrl-guid\0\0\D`
+	diskDeviceID := `Microsoft:` + vm + `\ctrl-guid\0\1\D`
+
+	nicRefs := []networkAdapterRef{
+		{portInstanceID: nicDeviceID, adapter: api.VmNetworkAdapter{Name: "eth0", SwitchName: "Internet-sw"}},
+	}
+	dvdRefs := []dvdDriveRef{
+		{driveInstanceID: dvdDeviceID, dvd: api.VmDvdDrive{ControllerNumber: 0, ControllerLocation: 0}},
+	}
+	diskRefs := []hardDiskDriveRef{
+		{driveInstanceID: diskDeviceID, drive: api.VmHardDiskDrive{ControllerNumber: 0, ControllerLocation: 1}},
+	}
+
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "eth0"},
+		{Type: api.Gen2BootType_DvdDrive, ControllerNumber: 0, ControllerLocation: 0},
+		{Type: api.Gen2BootType_HardDiskDrive, ControllerNumber: 0, ControllerLocation: 1},
+	}
+
+	fakeBootSourceRef := func(deviceInstanceID string) string {
+		return "REF:" + deviceInstanceID
+	}
+
+	got, err := resolveBootSourceRefs(fakeBootSourceRef, bootOrders, nicRefs, dvdRefs, diskRefs)
+	if err != nil {
+		t.Fatalf("resolveBootSourceRefs: %v", err)
+	}
+	want := []string{"REF:" + nicDeviceID, "REF:" + dvdDeviceID, "REF:" + diskDeviceID}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("resolveBootSourceRefs:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// TestResolveBootSourceRefs_UnresolvedNetworkAdapter は名前の一致する NIC が無い場合、
+// silent drop せず明示エラーになることを検証する。
+func TestResolveBootSourceRefs_UnresolvedNetworkAdapter(t *testing.T) {
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "missing"},
+	}
+	_, err := resolveBootSourceRefs(func(string) string { return "" }, bootOrders, nil, nil, nil)
+	if err == nil {
+		t.Fatal("対応する NIC が無い場合は明示エラーになるべき")
+	}
+}
+
+// TestResolveBootSourceRefs_UnresolvedDrive は controller/location の一致する DVD/HardDisk が
+// 無い場合、明示エラーになることを検証する。
+func TestResolveBootSourceRefs_UnresolvedDrive(t *testing.T) {
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_DvdDrive, ControllerNumber: 9, ControllerLocation: 9},
+	}
+	_, err := resolveBootSourceRefs(func(string) string { return "" }, bootOrders, nil, nil, nil)
+	if err == nil {
+		t.Fatal("対応する Drive が無い場合は明示エラーになるべき")
+	}
+}
+
+// TestResolveBootSourceRefs_Empty は空リストで no-op (nil, no error) を返すことを検証する。
+func TestResolveBootSourceRefs_Empty(t *testing.T) {
+	got, err := resolveBootSourceRefs(func(string) string { return "" }, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveBootSourceRefs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got: %+v", got)
+	}
+}
+
+// TestResolveBootSourceRefs_AmbiguousNetworkAdapterName は同名 NIC が複数存在する場合
+// (Hyper-V の既定名 "Network Adapter" 等)、Name のみの一致で決め打たず明示エラーになることを
+// 検証する。Name だけで先頭一致させると違う NIC の InstanceID を誤って書き込む危険がある
+// (Fable 敵対レビュー指摘、silent corruption)。
+func TestResolveBootSourceRefs_AmbiguousNetworkAdapterName(t *testing.T) {
+	nicRefs := []networkAdapterRef{
+		{portInstanceID: "nic-1", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "Internet-sw"}},
+		{portInstanceID: "nic-2", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "internal-sw"}},
+	}
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "Network Adapter"},
+	}
+	_, err := resolveBootSourceRefs(func(string) string { return "" }, bootOrders, nicRefs, nil, nil)
+	if err == nil {
+		t.Fatal("Name だけで複数 NIC に一致する場合は明示エラーになるべき (silent corruption 回避)")
+	}
+}
+
+// TestResolveBootSourceRefs_DisambiguateBySwitchName は同名 NIC でも SwitchName を指定すれば
+// 一意に解決できることを検証する (PS 版 Set-VMFirmware テンプレートと同じ絞り込み)。
+func TestResolveBootSourceRefs_DisambiguateBySwitchName(t *testing.T) {
+	nicRefs := []networkAdapterRef{
+		{portInstanceID: "nic-1", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "Internet-sw"}},
+		{portInstanceID: "nic-2", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "internal-sw"}},
+	}
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "Network Adapter", SwitchName: "internal-sw"},
+	}
+	got, err := resolveBootSourceRefs(func(id string) string { return "REF:" + id }, bootOrders, nicRefs, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveBootSourceRefs: %v", err)
+	}
+	if len(got) != 1 || got[0] != "REF:nic-2" {
+		t.Errorf("got: %+v, want REF:nic-2 (internal-sw の NIC)", got)
+	}
+}

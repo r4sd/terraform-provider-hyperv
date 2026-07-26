@@ -30,6 +30,28 @@ func secureBootTemplateIdToName(guid string) string {
 	return guid
 }
 
+// secureBootTemplateNameToGUID は secureBootTemplateIdToName の逆変換 (書き込み用)。
+// 空文字は「テンプレート未指定」として ""/true (zero 値、firmwareZeroDowngrade が現行値との比較で
+// 判断する)。既知の GUID (secureBootTemplateMicrosoftWindowsGUID) そのものが入力された場合もそのまま
+// 通す (state からの再入力等)。それ以外の未知のシンボル名・未知の GUID は ok=false を返し、
+// 呼び出し側が PS 委譲を判断する材料にする (どの GUID を書けばよいか分からないため、当て推量で
+// GUID を発行しない。MicrosoftUEFICertificateAuthority 等の他テンプレートは未確認のため #99 で
+// 追跡)。
+func secureBootTemplateNameToGUID(name string) (guid string, ok bool) {
+	if name == "" {
+		return "", true
+	}
+	if name == secureBootTemplateMicrosoftWindowsGUID {
+		return name, true
+	}
+	for g, n := range secureBootTemplateGUIDToName {
+		if n == name {
+			return g, true
+		}
+	}
+	return "", false
+}
+
 // firmwareFromSystemSettingData は Msvm_VirtualSystemSettingData から api.VmFirmware (スカラー部分) を
 // 組み立てる純関数。BootOrders は常に nil を返す (呼び出し側の GetVmFirmware が
 // resolveBootOrdersForVM で別途解決し、成功すれば上書きする)。

@@ -121,3 +121,105 @@ func resolveOneBootOrder(
 			"hyperv-wsman: BootSource %q の BootSourceType %d は未対応です (File/Unknown)", bootSourceID, bs.BootSourceType)
 	}
 }
+
+// resolveBootSourceRefs は resolveBootOrders の逆変換で、api.Gen2BootOrder[] (書き込み要求) を
+// Msvm_VirtualSystemSettingData.BootSourceOrder[] に書く WMI 参照文字列のリストに変換する。
+// bootSourceRef は deviceInstanceID から参照文字列を組み立てる関数 (実体は
+// hyperv.Client.BootSourceRef、テストでは差し替え可能にするため関数値で受ける)。
+//
+// NetworkAdapter は NetworkAdapterName で、DvdDrive/HardDiskDrive は
+// ControllerNumber+ControllerLocation で対応デバイスを突き合わせる (resolveOneBootOrder の
+// 読み取り側と対称)。対応するデバイスが見つからない場合は silent drop せず明示エラーにする
+// (DoD: 黙って成功報告する実装は禁止)。
+func resolveBootSourceRefs(
+	bootSourceRef func(deviceInstanceID string) string,
+	bootOrders []api.Gen2BootOrder,
+	nicRefs []networkAdapterRef,
+	dvdRefs []dvdDriveRef,
+	diskRefs []hardDiskDriveRef,
+) ([]string, error) {
+	if len(bootOrders) == 0 {
+		return nil, nil
+	}
+
+	result := make([]string, 0, len(bootOrders))
+	for _, bo := range bootOrders {
+		deviceID, err := resolveBootOrderDeviceID(bo, nicRefs, dvdRefs, diskRefs)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, bootSourceRef(deviceID))
+	}
+	return result, nil
+}
+
+// resolveBootOrderDeviceID は 1 件の api.Gen2BootOrder に対応するデバイスの InstanceID を返す。
+func resolveBootOrderDeviceID(
+	bo api.Gen2BootOrder,
+	nicRefs []networkAdapterRef,
+	dvdRefs []dvdDriveRef,
+	diskRefs []hardDiskDriveRef,
+) (string, error) {
+	switch bo.Type {
+	case api.Gen2BootType_NetworkAdapter:
+		// PS 版 (Get/Set-VMFirmware テンプレート) と同じく Name→SwitchName→MacAddress の順で絞り込む
+		// (指定されたものだけをフィルタ条件にする)。Hyper-V の NIC 既定名は "Network Adapter" で
+		// 同名 NIC が複数存在しうるため、Name だけの一致で決め打つと違う NIC を誤って書き込む危険が
+		// ある (Fable 指摘、silent corruption)。一意に絞り込めない場合は明示エラーにして PS へ
+		// 委譲する (DoD: 黙って成功報告する実装は禁止)。
+		var matches []networkAdapterRef
+		for _, r := range nicRefs {
+			if r.adapter.Name != bo.NetworkAdapterName {
+				continue
+			}
+			if bo.SwitchName != "" && r.adapter.SwitchName != bo.SwitchName {
+				continue
+			}
+			if bo.MacAddress != "" {
+				mac := ""
+				if !r.adapter.DynamicMacAddress {
+					mac = r.adapter.StaticMacAddress
+				}
+				if !strings.EqualFold(mac, bo.MacAddress) {
+					continue
+				}
+			}
+			matches = append(matches, r)
+		}
+		switch len(matches) {
+		case 1:
+			return matches[0].portInstanceID, nil
+		case 0:
+			return "", fmt.Errorf(
+				"hyperv-wsman: boot order の NetworkAdapter %q (SwitchName=%q MacAddress=%q) に対応する NIC が見つかりません",
+				bo.NetworkAdapterName, bo.SwitchName, bo.MacAddress)
+		default:
+			return "", fmt.Errorf(
+				"hyperv-wsman: boot order の NetworkAdapter %q が複数 (%d件) の NIC に一致し一意に特定できません。SwitchName/MacAddress で絞り込んでください",
+				bo.NetworkAdapterName, len(matches))
+		}
+
+	case api.Gen2BootType_DvdDrive:
+		for _, r := range dvdRefs {
+			if r.dvd.ControllerNumber == bo.ControllerNumber && r.dvd.ControllerLocation == bo.ControllerLocation {
+				return r.driveInstanceID, nil
+			}
+		}
+		return "", fmt.Errorf(
+			"hyperv-wsman: boot order の DvdDrive (controller=%d location=%d) に対応するデバイスが見つかりません",
+			bo.ControllerNumber, bo.ControllerLocation)
+
+	case api.Gen2BootType_HardDiskDrive:
+		for _, r := range diskRefs {
+			if int(r.drive.ControllerNumber) == bo.ControllerNumber && int(r.drive.ControllerLocation) == bo.ControllerLocation {
+				return r.driveInstanceID, nil
+			}
+		}
+		return "", fmt.Errorf(
+			"hyperv-wsman: boot order の HardDiskDrive (controller=%d location=%d) に対応するデバイスが見つかりません",
+			bo.ControllerNumber, bo.ControllerLocation)
+
+	default:
+		return "", fmt.Errorf("hyperv-wsman: boot order の Type %v は未対応です", bo.Type)
+	}
+}

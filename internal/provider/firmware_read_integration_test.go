@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 	hyperv_wsman "github.com/taliesins/terraform-provider-hyperv/api/hyperv-wsman"
 )
@@ -88,4 +89,110 @@ func TestRealHostFirmwareReadWsman(t *testing.T) {
 		t.Fatalf("GetVmFirmwares: got %d件, want 1", len(firmwares))
 	}
 	t.Logf("✅ GetVmFirmwares (1件ラップ) も確認")
+}
+
+// TestRealHostFirmwareBootOrderWsman は BootSourceOrder→Gen2BootOrder の相関ロジックを実機で検証する。
+// NIC + SCSI Controller + DVD (Ubuntu ISO) を付けた Gen2 VM で GetVmFirmware を呼び、
+// BootOrders に NetworkAdapter と DvdDrive が正しく解決されることを確認する。
+func TestRealHostFirmwareBootOrderWsman(t *testing.T) {
+	c := realHostConfigFromEnv(t)
+	wsmanClient, err := newWsmanClient(c)
+	if err != nil {
+		t.Fatalf("newWsmanClient: %v", err)
+	}
+	cc := &hyperv_wsman.ClientConfig{WsmanClient: wsmanClient}
+	ctx := context.Background()
+
+	const vmName = "tf-wsman-firmware-bootorder-test"
+	_ = cc.DeleteVm(ctx, vmName)
+	t.Cleanup(func() {
+		if err := cc.DeleteVm(ctx, vmName); err != nil {
+			t.Logf("cleanup DeleteVm: %v", err)
+		}
+	})
+
+	const memByt = 536870912
+	if err := cc.CreateVm(ctx, vmName,
+		"", 2, // Generation 2
+		api.CriticalErrorAction_Pause, 0,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 0,
+		api.OnOffState_Off, 0,
+		memByt, memByt, memByt,
+		"firmware-bootorder-test", 1,
+		"", "", true, false,
+	); err != nil {
+		t.Fatalf("CreateVm: %v", err)
+	}
+
+	vm, err := wsmanClient.FindComputerSystemByElementName(ctx, vmName)
+	if err != nil {
+		t.Fatalf("FindComputerSystemByElementName: %v", err)
+	}
+	vmGUID := vm.Name
+
+	// NIC (スイッチ接続なし、go-wsman #114 の影響を避ける)。
+	nicRes, err := wsmanClient.AddNetworkAdapter(ctx, vmGUID, hyperv.NetworkAdapterOptions{ElementName: "eth0-boottest"})
+	if err != nil {
+		t.Fatalf("AddNetworkAdapter: %v", err)
+	}
+	if nicRes.JobRef != "" {
+		if err := wsmanClient.WaitForJob(ctx, nicRes.JobRef); err != nil {
+			t.Fatalf("WaitForJob(AddNetworkAdapter): %v", err)
+		}
+	}
+
+	scsiRes, err := wsmanClient.AddScsiController(ctx, vmGUID)
+	if err != nil {
+		t.Fatalf("AddScsiController: %v", err)
+	}
+	if scsiRes.JobRef != "" {
+		if err := wsmanClient.WaitForJob(ctx, scsiRes.JobRef); err != nil {
+			t.Fatalf("WaitForJob(AddScsiController): %v", err)
+		}
+	}
+
+	const isoPath = `H:\ISO\ubuntu-24.04.4-live-server-amd64.iso`
+	dvdRes, err := wsmanClient.AttachDVD(ctx, vmGUID, hyperv.AttachDVDOptions{
+		ControllerType: hyperv.ControllerTypeSCSI, ControllerNumber: 0, ControllerLocation: 0, Path: isoPath,
+	})
+	if err != nil {
+		t.Fatalf("AttachDVD: %v", err)
+	}
+	if dvdRes.JobRef != "" {
+		if err := wsmanClient.WaitForJob(ctx, dvdRes.JobRef); err != nil {
+			t.Fatalf("WaitForJob(AttachDVD): %v", err)
+		}
+	}
+
+	firmware, err := cc.GetVmFirmware(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVmFirmware: %v", err)
+	}
+	t.Logf("firmware.BootOrders: %+v", firmware.BootOrders)
+
+	if len(firmware.BootOrders) != 2 {
+		t.Fatalf("BootOrders件数: got %d, want 2 (NIC+DVD)。相関解決に失敗し PS 委譲が発生した可能性あり", len(firmware.BootOrders))
+	}
+	var haveNIC, haveDVD bool
+	for _, b := range firmware.BootOrders {
+		switch b.Type {
+		case api.Gen2BootType_NetworkAdapter:
+			haveNIC = true
+			if b.NetworkAdapterName != "eth0-boottest" {
+				t.Errorf("NetworkAdapterName: got %q, want \"eth0-boottest\"", b.NetworkAdapterName)
+			}
+		case api.Gen2BootType_DvdDrive:
+			haveDVD = true
+			if b.Path != isoPath {
+				t.Errorf("DvdDrive Path: got %q, want %q", b.Path, isoPath)
+			}
+		}
+	}
+	if !haveNIC || !haveDVD {
+		t.Errorf("NIC/DVD 両方の BootOrder が解決されるべき: haveNIC=%v haveDVD=%v", haveNIC, haveDVD)
+	}
+	t.Logf("✅ BootSourceOrder→Gen2BootOrder 相関解決を実機で確認")
 }

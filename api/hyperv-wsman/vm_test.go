@@ -135,11 +135,12 @@ func TestVmFromSettingData(t *testing.T) {
 	if !got.GuestControlledCacheTypes {
 		t.Error("GuestControlledCacheTypes = false, want true")
 	}
-	if got.HighMemoryMappedIoSpace != 512 {
-		t.Errorf("HighMemoryMappedIoSpace = %d, want 512", got.HighMemoryMappedIoSpace)
+	// HighMmioGapSize/LowMmioGapSize は CIM 上 MB、api.Vm は byte (実運用移行の実機検証で発見)。
+	if got.HighMemoryMappedIoSpace != 512*1024*1024 {
+		t.Errorf("HighMemoryMappedIoSpace = %d, want %d (512MiB)", got.HighMemoryMappedIoSpace, uint64(512*1024*1024))
 	}
-	if got.LowMemoryMappedIoSpace != 128 {
-		t.Errorf("LowMemoryMappedIoSpace = %d, want 128", got.LowMemoryMappedIoSpace)
+	if got.LowMemoryMappedIoSpace != 128*1024*1024 {
+		t.Errorf("LowMemoryMappedIoSpace = %d, want %d (128MiB)", got.LowMemoryMappedIoSpace, uint32(128*1024*1024))
 	}
 	if got.Path != `C:\vms\test` {
 		t.Errorf("Path = %q", got.Path)
@@ -287,6 +288,81 @@ func TestApplyMemorySettings(t *testing.T) {
 		}
 		if m.Limit != 4096 {
 			t.Errorf("dynamic: Limit=%d, want 4096", m.Limit)
+		}
+	})
+}
+
+// TestMbToBytes は bytesToMB の逆変換 (READ 側、GetVm が使う) を検証する。
+func TestMbToBytes(t *testing.T) {
+	tests := []struct {
+		mb   uint64
+		want int64
+	}{
+		{0, 0},
+		{1, 1048576},       // 1 MiB
+		{2048, 2147483648}, // 2 GiB
+		{math.MaxUint64, math.MaxInt64 / (1024 * 1024) * (1024 * 1024)}, // 上限クランプ
+	}
+	for _, tt := range tests {
+		if got := mbToBytes(tt.mb); got != tt.want {
+			t.Errorf("mbToBytes(%d)=%d, want %d", tt.mb, got, tt.want)
+		}
+	}
+}
+
+// TestMbToBytesU64 は mbToBytes の uint64 版 (HighMemoryMappedIoSpace 等) を検証する。
+func TestMbToBytesU64(t *testing.T) {
+	tests := []struct {
+		mb   uint64
+		want uint64
+	}{
+		{0, 0},
+		{512, 512 * 1024 * 1024},
+		{math.MaxUint64, math.MaxUint64 / (1024 * 1024) * (1024 * 1024)}, // 上限クランプ
+	}
+	for _, tt := range tests {
+		if got := mbToBytesU64(tt.mb); got != tt.want {
+			t.Errorf("mbToBytesU64(%d)=%d, want %d", tt.mb, got, tt.want)
+		}
+	}
+}
+
+// TestApplyMemoryToVm は Msvm_MemorySettingData → api.Vm のメモリ関連フィールドへのマッピングを
+// 検証する (実運用の実機検証で発見: このマッピングが無いと DynamicMemory/StaticMemory が両方
+// false のゼロ値のままになり、resource read が「Either dynamic or static must be selected」で
+// 実機の全 VM で失敗していた)。
+func TestApplyMemoryToVm(t *testing.T) {
+	t.Run("static (DynamicMemoryEnabled=false)", func(t *testing.T) {
+		vm := &api.Vm{}
+		applyMemoryToVm(vm, &hyperv.Msvm_MemorySettingData{
+			VirtualQuantity: 8192, DynamicMemoryEnabled: false, Reservation: 8192, Limit: 8192,
+		})
+		if vm.DynamicMemory {
+			t.Error("DynamicMemory は false であるべき")
+		}
+		if !vm.StaticMemory {
+			t.Error("StaticMemory は true であるべき")
+		}
+		if vm.MemoryStartupBytes != 8*1024*1024*1024 {
+			t.Errorf("MemoryStartupBytes=%d, want 8GiB", vm.MemoryStartupBytes)
+		}
+	})
+	t.Run("dynamic (DynamicMemoryEnabled=true)", func(t *testing.T) {
+		vm := &api.Vm{}
+		applyMemoryToVm(vm, &hyperv.Msvm_MemorySettingData{
+			VirtualQuantity: 2048, DynamicMemoryEnabled: true, Reservation: 1024, Limit: 4096,
+		})
+		if !vm.DynamicMemory {
+			t.Error("DynamicMemory は true であるべき")
+		}
+		if vm.StaticMemory {
+			t.Error("StaticMemory は false であるべき")
+		}
+		if vm.MemoryMinimumBytes != 1024*1024*1024 {
+			t.Errorf("MemoryMinimumBytes=%d, want 1GiB", vm.MemoryMinimumBytes)
+		}
+		if vm.MemoryMaximumBytes != 4*1024*1024*1024 {
+			t.Errorf("MemoryMaximumBytes=%d, want 4GiB", vm.MemoryMaximumBytes)
 		}
 	})
 }

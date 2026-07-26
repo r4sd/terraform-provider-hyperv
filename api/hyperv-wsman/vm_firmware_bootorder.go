@@ -121,3 +121,76 @@ func resolveOneBootOrder(
 			"hyperv-wsman: BootSource %q の BootSourceType %d は未対応です (File/Unknown)", bootSourceID, bs.BootSourceType)
 	}
 }
+
+// resolveBootSourceRefs は resolveBootOrders の逆変換で、api.Gen2BootOrder[] (書き込み要求) を
+// Msvm_VirtualSystemSettingData.BootSourceOrder[] に書く WMI 参照文字列のリストに変換する。
+// bootSourceRef は deviceInstanceID から参照文字列を組み立てる関数 (実体は
+// hyperv.Client.BootSourceRef、テストでは差し替え可能にするため関数値で受ける)。
+//
+// NetworkAdapter は NetworkAdapterName で、DvdDrive/HardDiskDrive は
+// ControllerNumber+ControllerLocation で対応デバイスを突き合わせる (resolveOneBootOrder の
+// 読み取り側と対称)。対応するデバイスが見つからない場合は silent drop せず明示エラーにする
+// (DoD: 黙って成功報告する実装は禁止)。
+func resolveBootSourceRefs(
+	bootSourceRef func(deviceInstanceID string) string,
+	bootOrders []api.Gen2BootOrder,
+	nicRefs []networkAdapterRef,
+	dvdRefs []dvdDriveRef,
+	diskRefs []hardDiskDriveRef,
+) ([]string, error) {
+	if len(bootOrders) == 0 {
+		return nil, nil
+	}
+
+	result := make([]string, 0, len(bootOrders))
+	for _, bo := range bootOrders {
+		deviceID, err := resolveBootOrderDeviceID(bo, nicRefs, dvdRefs, diskRefs)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, bootSourceRef(deviceID))
+	}
+	return result, nil
+}
+
+// resolveBootOrderDeviceID は 1 件の api.Gen2BootOrder に対応するデバイスの InstanceID を返す。
+func resolveBootOrderDeviceID(
+	bo api.Gen2BootOrder,
+	nicRefs []networkAdapterRef,
+	dvdRefs []dvdDriveRef,
+	diskRefs []hardDiskDriveRef,
+) (string, error) {
+	switch bo.Type {
+	case api.Gen2BootType_NetworkAdapter:
+		for _, r := range nicRefs {
+			if r.adapter.Name == bo.NetworkAdapterName {
+				return r.portInstanceID, nil
+			}
+		}
+		return "", fmt.Errorf(
+			"hyperv-wsman: boot order の NetworkAdapter %q に対応する NIC が見つかりません", bo.NetworkAdapterName)
+
+	case api.Gen2BootType_DvdDrive:
+		for _, r := range dvdRefs {
+			if r.dvd.ControllerNumber == bo.ControllerNumber && r.dvd.ControllerLocation == bo.ControllerLocation {
+				return r.driveInstanceID, nil
+			}
+		}
+		return "", fmt.Errorf(
+			"hyperv-wsman: boot order の DvdDrive (controller=%d location=%d) に対応するデバイスが見つかりません",
+			bo.ControllerNumber, bo.ControllerLocation)
+
+	case api.Gen2BootType_HardDiskDrive:
+		for _, r := range diskRefs {
+			if int(r.drive.ControllerNumber) == bo.ControllerNumber && int(r.drive.ControllerLocation) == bo.ControllerLocation {
+				return r.driveInstanceID, nil
+			}
+		}
+		return "", fmt.Errorf(
+			"hyperv-wsman: boot order の HardDiskDrive (controller=%d location=%d) に対応するデバイスが見つかりません",
+			bo.ControllerNumber, bo.ControllerLocation)
+
+	default:
+		return "", fmt.Errorf("hyperv-wsman: boot order の Type %v は未対応です", bo.Type)
+	}
+}

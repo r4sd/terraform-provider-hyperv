@@ -13,16 +13,18 @@ import (
 )
 
 // TestClientConfig_ImplementsHypervVmFirmwareClient は ClientConfig が
-// api.HypervVmFirmwareClient を実装し、無条件 PS だった GetVmFirmware/GetVmFirmwares が
-// 本パッケージでシャドウイング (promotion ではなく直接定義) されていることを検証する。
-// CreateOrUpdate/GetNoVmFirmwares は埋め込み winrm から promotion されるため、ここでは検証しない
-// (WRITE 側は Slice D 継続)。
+// api.HypervVmFirmwareClient を実装し、無条件 PS だった GetVmFirmware/GetVmFirmwares/
+// CreateOrUpdateVmFirmware/CreateOrUpdateVmFirmwares が本パッケージでシャドウイング
+// (promotion ではなく直接定義) されていることを検証する。GetNoVmFirmwares は埋め込み winrm から
+// promotion される (PS 版と同じ「未対応」契約のため shadow しない)。
 func TestClientConfig_ImplementsHypervVmFirmwareClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmFirmwareClient = c // コンパイル時チェック
 
 	assertShadowedIn(t, "GetVmFirmware", "vm_firmware.go")
 	assertShadowedIn(t, "GetVmFirmwares", "vm_firmware.go")
+	assertShadowedIn(t, "CreateOrUpdateVmFirmware", "vm_firmware_write.go")
+	assertShadowedIn(t, "CreateOrUpdateVmFirmwares", "vm_firmware_write.go")
 }
 
 func TestSecureBootTemplateIdToName(t *testing.T) {
@@ -39,6 +41,28 @@ func TestSecureBootTemplateIdToName(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := secureBootTemplateIdToName(tt.id); got != tt.want {
 				t.Errorf("secureBootTemplateIdToName(%q): got %q, want %q", tt.id, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSecureBootTemplateNameToGUID(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantGUID string
+		wantOK   bool
+	}{
+		{"空文字は変更なし扱い", "", "", true},
+		{"既知のシンボル名", "MicrosoftWindows", secureBootTemplateMicrosoftWindowsGUID, true},
+		{"GUID形式の入力もそのまま通す", secureBootTemplateMicrosoftWindowsGUID, secureBootTemplateMicrosoftWindowsGUID, true},
+		{"未知のシンボル名はok=false", "SomeUnknownTemplate", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotGUID, gotOK := secureBootTemplateNameToGUID(tt.input)
+			if gotGUID != tt.wantGUID || gotOK != tt.wantOK {
+				t.Errorf("secureBootTemplateNameToGUID(%q): got (%q, %v), want (%q, %v)", tt.input, gotGUID, gotOK, tt.wantGUID, tt.wantOK)
 			}
 		})
 	}

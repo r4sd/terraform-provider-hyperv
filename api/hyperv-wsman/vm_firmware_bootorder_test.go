@@ -136,3 +136,78 @@ func TestResolveBootOrders_Empty(t *testing.T) {
 		t.Errorf("got: %+v", got)
 	}
 }
+
+// resolveBootSourceRefs (write 方向、resolveBootOrders の逆変換) のテスト。
+// bootSourceRefFunc は BootSourceRef(deviceInstanceID) の呼び出しをテスト内で検証可能にするための
+// 関数値 (go-wsman.Client を丸ごとモックする必要を避ける)。
+
+func TestResolveBootSourceRefs(t *testing.T) {
+	const vm = "11111111-aaaa-bbbb-cccc-000000000001"
+	nicDeviceID := `Microsoft:` + vm + `\nic-guid`
+	dvdDeviceID := `Microsoft:` + vm + `\ctrl-guid\0\0\D`
+	diskDeviceID := `Microsoft:` + vm + `\ctrl-guid\0\1\D`
+
+	nicRefs := []networkAdapterRef{
+		{portInstanceID: nicDeviceID, adapter: api.VmNetworkAdapter{Name: "eth0", SwitchName: "Internet-sw"}},
+	}
+	dvdRefs := []dvdDriveRef{
+		{driveInstanceID: dvdDeviceID, dvd: api.VmDvdDrive{ControllerNumber: 0, ControllerLocation: 0}},
+	}
+	diskRefs := []hardDiskDriveRef{
+		{driveInstanceID: diskDeviceID, drive: api.VmHardDiskDrive{ControllerNumber: 0, ControllerLocation: 1}},
+	}
+
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "eth0"},
+		{Type: api.Gen2BootType_DvdDrive, ControllerNumber: 0, ControllerLocation: 0},
+		{Type: api.Gen2BootType_HardDiskDrive, ControllerNumber: 0, ControllerLocation: 1},
+	}
+
+	fakeBootSourceRef := func(deviceInstanceID string) string {
+		return "REF:" + deviceInstanceID
+	}
+
+	got, err := resolveBootSourceRefs(fakeBootSourceRef, bootOrders, nicRefs, dvdRefs, diskRefs)
+	if err != nil {
+		t.Fatalf("resolveBootSourceRefs: %v", err)
+	}
+	want := []string{"REF:" + nicDeviceID, "REF:" + dvdDeviceID, "REF:" + diskDeviceID}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("resolveBootSourceRefs:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// TestResolveBootSourceRefs_UnresolvedNetworkAdapter は名前の一致する NIC が無い場合、
+// silent drop せず明示エラーになることを検証する。
+func TestResolveBootSourceRefs_UnresolvedNetworkAdapter(t *testing.T) {
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_NetworkAdapter, NetworkAdapterName: "missing"},
+	}
+	_, err := resolveBootSourceRefs(func(string) string { return "" }, bootOrders, nil, nil, nil)
+	if err == nil {
+		t.Fatal("対応する NIC が無い場合は明示エラーになるべき")
+	}
+}
+
+// TestResolveBootSourceRefs_UnresolvedDrive は controller/location の一致する DVD/HardDisk が
+// 無い場合、明示エラーになることを検証する。
+func TestResolveBootSourceRefs_UnresolvedDrive(t *testing.T) {
+	bootOrders := []api.Gen2BootOrder{
+		{Type: api.Gen2BootType_DvdDrive, ControllerNumber: 9, ControllerLocation: 9},
+	}
+	_, err := resolveBootSourceRefs(func(string) string { return "" }, bootOrders, nil, nil, nil)
+	if err == nil {
+		t.Fatal("対応する Drive が無い場合は明示エラーになるべき")
+	}
+}
+
+// TestResolveBootSourceRefs_Empty は空リストで no-op (nil, no error) を返すことを検証する。
+func TestResolveBootSourceRefs_Empty(t *testing.T) {
+	got, err := resolveBootSourceRefs(func(string) string { return "" }, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("resolveBootSourceRefs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got: %+v", got)
+	}
+}

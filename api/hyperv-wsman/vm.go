@@ -185,6 +185,9 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) ap
 		LowMemoryMappedIoSpace:  clampUint32(mbToBytesU64(sd.LowMmioGapSize)),
 		SnapshotFileLocation:    sd.SnapshotDataRoot,
 		SmartPagingFilePath:     sd.SwapFileDataRoot,
+		// UserSnapshotType(CIM) は Microsoft.HyperV.PowerShell.CheckpointType と数値が
+		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write 側は #46 に延期。
+		CheckpointType: api.CheckpointType(sd.UserSnapshotType),
 
 		// 以下は本メソッドでは未設定 (ゼロ値):
 		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount /
@@ -194,7 +197,7 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) ap
 		//     (CIM datetime/interval 文字列) を parseIntervalMinutes で分に変換する。
 		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要だが go-wsman の
 		//     CIM 構造体に未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
-		//   - CheckpointType / AutomaticCheckpointsEnabled: v2.1 (#46) に延期。
+		//   - AutomaticCheckpointsEnabled: v2.1 (#46) に延期。
 	}
 }
 

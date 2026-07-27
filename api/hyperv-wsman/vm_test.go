@@ -107,6 +107,7 @@ func TestVmFromSettingData(t *testing.T) {
 		ConfigurationDataRoot:        `C:\vms\test`,
 		SnapshotDataRoot:             `C:\vms\snap`,
 		SwapFileDataRoot:             `C:\vms\swap`,
+		UserSnapshotType:             hyperv.UserSnapshotTypeProductionNoFallback,
 	}
 
 	got := vmFromSettingData("test-vm", sd)
@@ -150,6 +151,10 @@ func TestVmFromSettingData(t *testing.T) {
 	}
 	if got.SmartPagingFilePath != `C:\vms\swap` {
 		t.Errorf("SmartPagingFilePath = %q", got.SmartPagingFilePath)
+	}
+	// UserSnapshotType(CIM) → CheckpointType(api) は値が一致する定義のため直接変換 (#106)。
+	if got.CheckpointType != api.CheckpointType_ProductionOnly {
+		t.Errorf("CheckpointType = %v, want ProductionOnly", got.CheckpointType)
 	}
 }
 

@@ -12,9 +12,13 @@ package provider
 // Calls() が加算されるので即検知できる。
 //
 // PS-0 が成立する条件 (v2.0「Home-env PS-free」の合格条件2 の正確な範囲):
-//   - VM が Gen1 であること (Gen2 は GetVmFirmwares が未シャドウ=PS のまま)。
 //   - 全 network_adapter が wait_for_ips=false であること。wait_for_ips のスキーマ default は
 //     true で、1 つでも true だと read の WaitForVmNetworkAdaptersIps が PS へ委譲する (#76)。
+//
+// Gen2 の firmware read (GetVmFirmwares) は Slice D (#80, PR#101, main 2230fc5) でシャドウ済み。
+// 旧版のこのコメントは「Gen2 は未シャドウ」としていたが、resourceHyperVMachineInstanceRead が
+// Gen2 で実際に呼ぶのは GetVmFirmwares であり(GetNoVmFirmwares は Gen1 専用の no-op)、本テストが
+// それを反映していなかった(#108 で発覚)。Gen1/Gen2 とも生成物に関わらず PS-0 が成立する。
 //
 // 書き込み系 (create/update の processor/IS/firmware) は該当ブロックを config が持つ場合に PS
 // フォールバックのため、full-lifecycle の PS-0 は別途 write シャドウ実装後になる。
@@ -93,38 +97,30 @@ func TestRealHostStrictReadNoPS(t *testing.T) {
 	mustNoPS("WaitForVmNetworkAdaptersIps(all-false)",
 		cc.WaitForVmNetworkAdaptersIps(ctx, vmName, 0, 0, []api.VmNetworkAdapterWaitForIp{{Name: "", WaitForIps: false}}))
 
-	// firmware: Gen1 は GetNoVmFirmwares=純 Go no-op で PS を踏まない。Gen2 は GetVmFirmwares が
-	// 未シャドウ=PS のため、ここでは main の strict には載せず、下の negative control で別スタブで扱う。
-	if vm.Generation <= 1 {
+	// firmware: resourceHyperVMachineInstanceRead (internal/provider/resource_hyperv_machine_instance.go)
+	// と同じ分岐。Gen1 は GetNoVmFirmwares (純 Go no-op)、Gen2 は GetVmFirmwares (Slice D でシャドウ済み)。
+	// どちらも main の strict client で実行し PS-0 判定に含める。
+	if vm.Generation > 1 {
+		_, err = cc.GetVmFirmwares(ctx, vmName)
+		mustNoPS("GetVmFirmwares", err)
+	} else {
 		_ = cc.GetNoVmFirmwares(ctx) // no-op、PS を踏まない
 	}
 
-	// --- 合格条件: 上記 Read 経路 (Gen 非依存部 + wait_for_ips=false) の PS フォールバック 0 件 ---
+	// --- 合格条件: 上記 Read 経路 (wait_for_ips=false 前提) の PS フォールバック 0 件 ---
 	if calls := strict.Calls(); calls != 0 {
 		t.Errorf("Read 経路で PS フォールバックが %d 件走った (strict 不合格): %v", calls, strict.Labels())
 	} else {
 		t.Logf("✅ VM %q (generation=%d) の Read 経路 (wait_for_ips=false 前提) は PS 呼び出し 0 件 (strict 合格)", vmName, vm.Generation)
 	}
-	if vm.Generation > 1 {
-		t.Logf("⚠️ generation=%d: GetVmFirmwares が未シャドウ=PS のため、Gen2 の refresh は PS-0 未達 (firmware write/read シャドウは v2.1)", vm.Generation)
-	}
 
-	// --- negative control 1: strict ハーネスの検出力 (未シャドウ GetVmFirmwares は必ず発火) ---
-	negFw := &hyperv_wsman.StrictNoPSClient{}
-	negFwCC := &hyperv_wsman.ClientConfig{
-		ClientConfig: &hyperv_winrm.ClientConfig{WinRmClient: negFw},
-		WsmanClient:  wsmanClient,
-	}
-	if _, err := negFwCC.GetVmFirmwares(ctx, vmName); err == nil {
-		t.Error("negative control: 未シャドウの GetVmFirmwares は strict で error になるべき (検出力の証明)")
-	}
-	if negFw.Calls() == 0 {
-		t.Error("negative control: strict スタブが GetVmFirmwares の PS 呼び出しを検知できていない")
-	} else {
-		t.Logf("✅ negative control(firmware): GetVmFirmwares が PS として検知された (%v)", negFw.Labels())
-	}
+	// negative control 1 (firmware) は削除済み (#108): GetVmFirmwares は Slice D で完全にシャドウ
+	// されたため「未シャドウなので必ず PS 検知される」という前提が崩れ、恒真失敗になっていた。
+	// firmware 経路の検出力は full_lifecycle_strict_integration_test.go の write 側 negative
+	// control (ConsoleMode ゼロ値ダウングレード) で別途担保している。read 側は下の
+	// wait_for_ips negative control のみで DoD の「negative control 必須」を満たす。
 
-	// --- negative control 2: wait_for_ips=true は PS へ委譲する (制限の実証 + 検出力) ---
+	// --- negative control: wait_for_ips=true は PS へ委譲する (制限の実証 + 検出力) ---
 	// これにより「wait_for_ips=false なら PS-0」の逆も抑えられ、上の all-false アサーションが
 	// 恒真でないことが担保される。
 	negWait := &hyperv_wsman.StrictNoPSClient{}

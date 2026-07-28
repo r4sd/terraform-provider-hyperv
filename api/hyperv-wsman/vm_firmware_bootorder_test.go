@@ -215,7 +215,7 @@ func TestResolveBootSourceRefs_Empty(t *testing.T) {
 // TestResolveBootSourceRefs_AmbiguousNetworkAdapterName は同名 NIC が複数存在する場合
 // (Hyper-V の既定名 "Network Adapter" 等)、Name のみの一致で決め打たず明示エラーになることを
 // 検証する。Name だけで先頭一致させると違う NIC の InstanceID を誤って書き込む危険がある
-// (Fable 敵対レビュー指摘、silent corruption)。
+// (Fable 批判的レビュー指摘、silent corruption)。
 func TestResolveBootSourceRefs_AmbiguousNetworkAdapterName(t *testing.T) {
 	nicRefs := []networkAdapterRef{
 		{portInstanceID: "nic-1", adapter: api.VmNetworkAdapter{Name: "Network Adapter", SwitchName: "Internet-sw"}},

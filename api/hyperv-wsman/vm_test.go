@@ -110,7 +110,10 @@ func TestVmFromSettingData(t *testing.T) {
 		UserSnapshotType:             hyperv.UserSnapshotTypeProductionNoFallback,
 	}
 
-	got := vmFromSettingData("test-vm", sd)
+	got, err := vmFromSettingData("test-vm", sd)
+	if err != nil {
+		t.Fatalf("vmFromSettingData: %v", err)
+	}
 
 	if got.Name != "test-vm" {
 		t.Errorf("Name = %q, want test-vm", got.Name)
@@ -155,6 +158,28 @@ func TestVmFromSettingData(t *testing.T) {
 	// UserSnapshotType(CIM) → CheckpointType(api) は値が一致する定義のため直接変換 (#106)。
 	if got.CheckpointType != api.CheckpointType_ProductionOnly {
 		t.Errorf("CheckpointType = %v, want ProductionOnly", got.CheckpointType)
+	}
+}
+
+// TestVmFromSettingData_InvalidUserSnapshotType は UserSnapshotType が既知の値
+// (2-5) 以外の場合に fail-loud でエラーになることを検証する。CIM 応答異常
+// (フィールド欠落によるゼロ値・想定外の列挙値) を、空文字列の checkpoint_type として
+// 静かに #106 型の drift を再発させないためのガード (Fable 批判的レビュー指摘)。
+func TestVmFromSettingData_InvalidUserSnapshotType(t *testing.T) {
+	tests := []struct {
+		name             string
+		userSnapshotType uint16
+	}{
+		{"ゼロ値(フィールド欠落)", 0},
+		{"既知範囲外(6)", 6},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sd := &hyperv.Msvm_VirtualSystemSettingData{UserSnapshotType: tt.userSnapshotType}
+			if _, err := vmFromSettingData("test-vm", sd); err == nil {
+				t.Errorf("vmFromSettingData(UserSnapshotType=%d): エラーを期待したが nil", tt.userSnapshotType)
+			}
+		})
 	}
 }
 
@@ -514,4 +539,39 @@ func TestApplyVmLevelSettings(t *testing.T) {
 	if len(sd.Notes) != 2 || sd.Notes[0] != "n1" || sd.Notes[1] != "n2" {
 		t.Errorf("Notes=%v, want [n1 n2]", sd.Notes)
 	}
+}
+
+// TestValidateCheckpointFieldsUnchanged は checkpointType/automaticCheckpointsEnabled の
+// 変更要求を UpdateVm が黙って無視せず検知することを検証する (#106 Fable 批判的レビュー指摘、
+// write 側が #46 まで未実装のため、変更要求は fail-loud にする必要がある)。
+func TestValidateCheckpointFieldsUnchanged(t *testing.T) {
+	cur := &hyperv.Msvm_VirtualSystemSettingData{
+		UserSnapshotType:          hyperv.UserSnapshotTypeProductionFallbackToTest, // Production(3)
+		AutomaticSnapshotsEnabled: false,
+	}
+
+	t.Run("変更なしなら nil", func(t *testing.T) {
+		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Production, false, cur); err != nil {
+			t.Errorf("変更なしのはずがエラー: %v", err)
+		}
+	})
+
+	t.Run("checkpoint_type の変更要求はエラー", func(t *testing.T) {
+		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Disabled, false, cur); err == nil {
+			t.Error("checkpoint_type 変更要求はエラーになるべき (WS-Man write未実装)")
+		}
+	})
+
+	t.Run("automatic_checkpoints_enabled の変更要求はエラー", func(t *testing.T) {
+		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Production, true, cur); err == nil {
+			t.Error("automatic_checkpoints_enabled 変更要求はエラーになるべき (WS-Man write未実装)")
+		}
+	})
+
+	t.Run("現在値が不正(UserSnapshotType未知)ならエラー", func(t *testing.T) {
+		bad := &hyperv.Msvm_VirtualSystemSettingData{UserSnapshotType: 0}
+		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Production, false, bad); err == nil {
+			t.Error("不正な現在値はエラーになるべき")
+		}
+	})
 }

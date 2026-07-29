@@ -103,7 +103,10 @@ func (c *ClientConfig) GetVm(ctx context.Context, name string) (api.Vm, error) {
 	if err != nil {
 		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, err)
 	}
-	vm := vmFromSettingData(name, sd)
+	vm, err := vmFromSettingData(name, sd)
+	if err != nil {
+		return api.Vm{}, fmt.Errorf("hyperv-wsman: GetVm %q: %w", name, err)
+	}
 
 	timeout, err := parseIntervalMinutes(sd.AutomaticCriticalErrorActionTimeout)
 	if err != nil {
@@ -167,7 +170,11 @@ func mbToBytesU64(mb uint64) uint64 {
 // enum (CriticalErrorAction/StartAction/StopAction) は provider 側の整数値が CIM 値と
 // 一致するよう定義されているため直接変換する (None=0/Pause=1、Nothing=2/Start=4 等)。
 // uint16→int は拡大変換のため安全。
-func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) api.Vm {
+func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (api.Vm, error) {
+	checkpointType, err := checkpointTypeFromUserSnapshotType(sd.UserSnapshotType)
+	if err != nil {
+		return api.Vm{}, fmt.Errorf("checkpoint_type: %w", err)
+	}
 	return api.Vm{
 		Name:                         name,
 		Path:                         sd.ConfigurationDataRoot,
@@ -187,7 +194,7 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) ap
 		SmartPagingFilePath:     sd.SwapFileDataRoot,
 		// UserSnapshotType(CIM) は Microsoft.HyperV.PowerShell.CheckpointType と数値が
 		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write 側は #46 に延期。
-		CheckpointType: api.CheckpointType(sd.UserSnapshotType),
+		CheckpointType: checkpointType,
 
 		// 以下は本メソッドでは未設定 (ゼロ値):
 		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount /
@@ -198,7 +205,44 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) ap
 		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要だが go-wsman の
 		//     CIM 構造体に未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
 		//   - AutomaticCheckpointsEnabled: v2.1 (#46) に延期。
+	}, nil
+}
+
+// validateCheckpointFieldsUnchanged は checkpointType/automaticCheckpointsEnabled が現在値と
+// 一致するか検証する。WS-Man 経由の変更適用は未実装 (#46) のため、黙って無視すると
+// 「read→drift→shutdown→書き込みは no-op→再起動後も drift」のループになる
+// (Fable 批判的レビュー指摘)。UpdateVm から呼ぶ。
+func validateCheckpointFieldsUnchanged(
+	wantCheckpointType api.CheckpointType,
+	wantAutomaticCheckpointsEnabled bool,
+	cur *hyperv.Msvm_VirtualSystemSettingData,
+) error {
+	curCheckpointType, err := checkpointTypeFromUserSnapshotType(cur.UserSnapshotType)
+	if err != nil {
+		return fmt.Errorf("checkpoint_type: %w", err)
 	}
+	if wantCheckpointType != curCheckpointType {
+		return fmt.Errorf("checkpoint_type の変更 (%s→%s) は WS-Man 経路で未実装 (#46)。HYPERV_USE_WSMAN=0 (PS 経路) を使うこと",
+			curCheckpointType, wantCheckpointType)
+	}
+	if wantAutomaticCheckpointsEnabled != cur.AutomaticSnapshotsEnabled {
+		return fmt.Errorf("automatic_checkpoints_enabled の変更 (%t→%t) は WS-Man 経路で未実装 (#46)。HYPERV_USE_WSMAN=0 (PS 経路) を使うこと",
+			cur.AutomaticSnapshotsEnabled, wantAutomaticCheckpointsEnabled)
+	}
+	return nil
+}
+
+// checkpointTypeFromUserSnapshotType は CIM の UserSnapshotType を api.CheckpointType に
+// 変換する。既知の値 (2-5) 以外は CIM 応答異常 (フィールド欠落によるゼロ値・未知の列挙値) として
+// エラーを返す。ここを黙って通すと api.CheckpointType.String() が空文字列を返し、#106 の
+// 恒常 drift (schema Default との不一致で毎 plan diff → apply 毎に VM 強制シャットダウン) が
+// 無音で再発するため fail-loud にする (Fable 批判的レビュー指摘)。
+func checkpointTypeFromUserSnapshotType(v uint16) (api.CheckpointType, error) {
+	ct := api.CheckpointType(v)
+	if _, ok := api.CheckpointType_name[ct]; !ok {
+		return 0, fmt.Errorf("未知の UserSnapshotType 値 %d (既知範囲は 2-5)", v)
+	}
+	return ct, nil
 }
 
 // vmGenerationFromSubType は VirtualSystemSubType を Generation 番号に変換する。
@@ -389,8 +433,11 @@ func (c *ClientConfig) CreateVm(
 // CIM の ModifySystemSettings はゼロ値フィールドを「変更なし」とみなすため、各フィールドは
 // 新しい値で上書きする (CreateVm と enum/メモリ変換ロジックを共有)。
 //
-// 未適用: automaticStartDelay (CreateVm と同じ理由、#102 スコープ外) / checkpointType /
-// automaticCheckpointsEnabled (v2.1)。
+// 未適用: automaticStartDelay (CreateVm と同じ理由、#102 スコープ外)。checkpointType /
+// automaticCheckpointsEnabled は書き込み自体が v2.1 (#46) まで未実装だが、変更要求を
+// 黙って無視すると「read→drift→shutdown→書き込みは no-op」のループになるため、
+// 現在値との不一致を検知したら明示エラーで PS 経路への委譲を促す
+// (validateCheckpointFieldsUnchanged、Fable 批判的レビュー指摘)。
 func (c *ClientConfig) UpdateVm(
 	ctx context.Context,
 	name string,
@@ -428,6 +475,9 @@ func (c *ClientConfig) UpdateVm(
 	cur, err := c.WsmanClient.GetSystemSettingData(ctx, guid)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get settings: %w", name, err)
+	}
+	if err := validateCheckpointFieldsUnchanged(checkpointType, automaticCheckpointsEnabled, cur); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
 	}
 	sd := &hyperv.Msvm_VirtualSystemSettingData{InstanceID: cur.InstanceID}
 	applyVmLevelSettings(sd, automaticCriticalErrorAction, automaticStartAction, automaticStopAction,

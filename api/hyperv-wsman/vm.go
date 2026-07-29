@@ -165,6 +165,12 @@ func mbToBytesU64(mb uint64) uint64 {
 	return mb * 1024 * 1024
 }
 
+// bytesToMbU64 は byte 単位を CIM の MB 単位に変換する (mbToBytesU64 の逆変換、write 側)。
+// MB 境界に揃っていない値は切り捨てる (#105、CreateVm/UpdateVm の書き込みで必要)。
+func bytesToMbU64(bytes uint64) uint64 {
+	return bytes / (1024 * 1024)
+}
+
 // vmFromSettingData は Msvm_VirtualSystemSettingData を api.Vm にマッピングする (純関数)。
 //
 // enum (CriticalErrorAction/StartAction/StopAction) は provider 側の整数値が CIM 値と
@@ -621,8 +627,12 @@ func applyVmLevelSettings(
 	sd.AutomaticCriticalErrorAction = enumToUint16(int(criticalErrorAction))
 	sd.LockOnDisconnect = lockOnDisconnect == api.OnOffState_On
 	sd.GuestControlledCacheTypes = guestControlledCacheTypes
-	sd.HighMmioGapSize = highMmioGapSize
-	sd.LowMmioGapSize = uint64(lowMmioGapSize)
+	// HighMmioGapSize/LowMmioGapSize は CIM 上 MB 単位だが引数は api.Vm 由来の byte 単位
+	// (read 側 mbToBytesU64 の逆変換)。変換漏れのまま送信すると Hyper-V が
+	// ErrorCode=32773「無効な値」で CreateVm/UpdateVm を拒否する
+	// (#105、実機で新規VM作成が全滅する形で発覚、schema default値でも発火する)。
+	sd.HighMmioGapSize = bytesToMbU64(highMmioGapSize)
+	sd.LowMmioGapSize = bytesToMbU64(uint64(lowMmioGapSize))
 	if snapshotFileLocation != "" {
 		sd.SnapshotDataRoot = snapshotFileLocation
 	}

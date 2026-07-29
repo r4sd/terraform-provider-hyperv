@@ -357,6 +357,35 @@ func TestMbToBytesU64(t *testing.T) {
 	}
 }
 
+// TestBytesToMbU64 は mbToBytesU64 の逆変換 (write 側、#105) を検証する。
+func TestBytesToMbU64(t *testing.T) {
+	tests := []struct {
+		bytes uint64
+		want  uint64
+	}{
+		{0, 0},
+		{512 * 1024 * 1024, 512},
+		{128 * 1024 * 1024, 128},
+		{100, 0}, // MB 境界未満は切り捨て
+	}
+	for _, tt := range tests {
+		if got := bytesToMbU64(tt.bytes); got != tt.want {
+			t.Errorf("bytesToMbU64(%d)=%d, want %d", tt.bytes, got, tt.want)
+		}
+	}
+}
+
+// TestMbBytesRoundTrip は mbToBytesU64 (read) と bytesToMbU64 (write) が MB 境界に揃った値で
+// 厳密に往復することを検証する (DoD: 単位変換は round-trip test で固定する)。
+func TestMbBytesRoundTrip(t *testing.T) {
+	for _, mb := range []uint64{0, 1, 128, 512, 3584, 4096} {
+		bytes := mbToBytesU64(mb)
+		if got := bytesToMbU64(bytes); got != mb {
+			t.Errorf("round-trip: mb=%d → bytes=%d → mb=%d (want %d)", mb, bytes, got, mb)
+		}
+	}
+}
+
 // TestApplyMemoryToVm は Msvm_MemorySettingData → api.Vm のメモリ関連フィールドへのマッピングを
 // 検証する (実運用の実機検証で発見: このマッピングが無いと DynamicMemory/StaticMemory が両方
 // false のゼロ値のままになり、resource read が「Either dynamic or static must be selected」で
@@ -438,7 +467,7 @@ func TestVmSettingDataForCreate(t *testing.T) {
 	sd, err := vmSettingDataForCreate(
 		"vm1", cfgPath, 2,
 		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
-		true, 512, api.OnOffState_On, 128,
+		true, 512*1024*1024, api.OnOffState_On, 128*1024*1024,
 		"note1\nnote2", pagePath, snapPath,
 	)
 	if err != nil {
@@ -511,7 +540,7 @@ func TestApplyVmLevelSettings(t *testing.T) {
 	}
 	applyVmLevelSettings(sd,
 		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
-		true, 256, api.OnOffState_On, 64,
+		true, 256*1024*1024, api.OnOffState_On, 64*1024*1024,
 		"n1\nn2", `C:\new\paging`, "") // snapshot="" → 既存維持
 
 	if sd.InstanceID != "keep-me" {

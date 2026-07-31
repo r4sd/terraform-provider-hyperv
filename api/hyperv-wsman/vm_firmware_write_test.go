@@ -2,6 +2,7 @@ package hyperv_wsman
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
@@ -63,6 +64,34 @@ func TestFirmwareWriteNoop(t *testing.T) {
 	diff.consoleMode = hyperv.ConsoleModeCOM1
 	if firmwareWriteNoop(current, diff) {
 		t.Error("差分がある場合は no-op と判定されるべきではない")
+	}
+}
+
+// TestFirmwareWriteNoop_SecureBootTemplateIdCaseInsensitive は SecureBootTemplateId の GUID
+// 表記の大文字小文字がホストによって揺れても (go-wsman #103 の case-sensitivity 事故と同種)、
+// 同一テンプレートを指す限り no-op と判定されることを検証する (#100 既知ギャップ 2)。
+func TestFirmwareWriteNoop_SecureBootTemplateIdCaseInsensitive(t *testing.T) {
+	current := &hyperv.Msvm_VirtualSystemSettingData{
+		SecureBootTemplateId:         strings.ToLower(secureBootTemplateMicrosoftWindowsGUID),
+		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
+		ConsoleMode:                  hyperv.ConsoleModeDefault,
+	}
+	want := firmwareCIMValues{
+		secureBootTemplateGUID: secureBootTemplateMicrosoftWindowsGUID,
+		networkBootProtocol:    hyperv.NetworkBootPreferredProtocolIPv4,
+		consoleMode:            hyperv.ConsoleModeDefault,
+	}
+	if !firmwareWriteNoop(current, want) {
+		t.Error("大文字小文字表記が違うだけの同一 GUID は no-op と判定されるべき")
+	}
+
+	wantDifferentTemplate := firmwareCIMValues{
+		secureBootTemplateGUID: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+		networkBootProtocol:    hyperv.NetworkBootPreferredProtocolIPv4,
+		consoleMode:            hyperv.ConsoleModeDefault,
+	}
+	if firmwareWriteNoop(current, wantDifferentTemplate) {
+		t.Error("異なる GUID は no-op と判定されるべきではない")
 	}
 }
 

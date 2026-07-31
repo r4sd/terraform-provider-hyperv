@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 
 	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
@@ -67,9 +68,12 @@ func buildFirmwareCIMValues(
 // 前置なし+フォワードスラッシュ区切りの namespace) とで文字列表現が一致しない (Fable 指摘)。
 // 生文字列比較では常に不一致になり差分なしガードが機能しないため、両辺を
 // extractInstanceIDFromRef で素の InstanceID に正規化してから比較する。
+//
+// SecureBootTemplateId は GUID の大文字小文字表記がホストによって揺れうる
+// (go-wsman #103 の case-sensitivity 事故と同種、#100) ため EqualFold で比較する。
 func firmwareWriteNoop(current *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) bool {
 	return current.SecureBoot == want.secureBoot &&
-		current.SecureBootTemplateId == want.secureBootTemplateGUID &&
+		strings.EqualFold(current.SecureBootTemplateId, want.secureBootTemplateGUID) &&
 		current.NetworkBootPreferredProtocol == want.networkBootProtocol &&
 		current.ConsoleMode == want.consoleMode &&
 		current.PauseAfterBootFailure == want.pauseAfterBootFailure &&

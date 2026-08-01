@@ -4,48 +4,58 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
-// secureBootTemplateMicrosoftWindowsGUID は Hyper-V の "MicrosoftWindows" Secure Boot テンプレートの
-// 固定識別子(全 Hyper-V 環境で共通、秘密情報ではない)。実機確認済み(2026-07-26、Gen2 シェル VM の
-// 既定値)。他のテンプレート(MicrosoftUEFICertificateAuthority / OpenSourceShieldedVM 等)の GUID は
-// 未確認のため表に含めない(一次資料検証ルール: 確認できていない値をコードに埋め込まない)。
-const secureBootTemplateMicrosoftWindowsGUID = "1734C6E8-3154-4DDA-BA5F-A874CC483422"
+// Secure Boot テンプレートの固定識別子(全 Hyper-V 環境で共通、秘密情報ではない)。
+// 実機で `Set-VMFirmware -SecureBootTemplate <名前>` を実行し、CIM 側の
+// Msvm_VirtualSystemSettingData.SecureBootTemplateId を読んで対応を確認した(2026-08-01、#100)。
+// PS が受け付けるシンボリック名はこの 3 種で、Windows ゲストは MicrosoftWindows、
+// Linux ゲストは MicrosoftUEFICertificateAuthority を使うのが一般的。
+const (
+	secureBootTemplateMicrosoftWindowsGUID     = "1734C6E8-3154-4DDA-BA5F-A874CC483422"
+	secureBootTemplateMicrosoftUEFICAGUID      = "272E7447-90A4-4563-A4B9-8E4AB00526CE"
+	secureBootTemplateOpenSourceShieldedVMGUID = "4292AE2B-EE2C-42B5-A969-DD8F8689F6F3"
+)
 
 // secureBootTemplateGUIDToName は Msvm_VirtualSystemSettingData.SecureBootTemplateId (実 GUID) から
 // PS の -SecureBootTemplate が受け付けるシンボリック名への逆引き表。未知の GUID は
 // secureBootTemplateIdToName が GUID 文字列のままフォールバックする。
 var secureBootTemplateGUIDToName = map[string]string{
-	secureBootTemplateMicrosoftWindowsGUID: "MicrosoftWindows",
+	secureBootTemplateMicrosoftWindowsGUID:     "MicrosoftWindows",
+	secureBootTemplateMicrosoftUEFICAGUID:      "MicrosoftUEFICertificateAuthority",
+	secureBootTemplateOpenSourceShieldedVMGUID: "OpenSourceShieldedVM",
 }
 
 // secureBootTemplateIdToName は既知の GUID ならシンボリック名を、未知/空なら入力をそのまま返す。
+// GUID の大文字小文字表記はホストによって揺れうる (#100) ため EqualFold で照合する。
 func secureBootTemplateIdToName(guid string) string {
-	if name, ok := secureBootTemplateGUIDToName[guid]; ok {
-		return name
+	for g, n := range secureBootTemplateGUIDToName {
+		if strings.EqualFold(g, guid) {
+			return n
+		}
 	}
 	return guid
 }
 
 // secureBootTemplateNameToGUID は secureBootTemplateIdToName の逆変換 (書き込み用)。
 // 空文字は「テンプレート未指定」として ""/true (zero 値、firmwareZeroDowngrade が現行値との比較で
-// 判断する)。既知の GUID (secureBootTemplateMicrosoftWindowsGUID) そのものが入力された場合もそのまま
-// 通す (state からの再入力等)。それ以外の未知のシンボル名・未知の GUID は ok=false を返し、
-// 呼び出し側が PS 委譲を判断する材料にする (どの GUID を書けばよいか分からないため、当て推量で
-// GUID を発行しない。MicrosoftUEFICertificateAuthority 等の他テンプレートは未確認のため #99 で
-// 追跡)。
+// 判断する)。既知の GUID そのものが入力された場合は入力表記のまま通す (state からの再入力等。
+// 比較側が EqualFold なので表記を正規化する必要はなく、余計な書き換えを避ける)。
+// それ以外の未知のシンボル名・未知の GUID は ok=false を返し、呼び出し側が PS 委譲を判断する
+// 材料にする (どの GUID を書けばよいか分からないため、当て推量で GUID を発行しない)。
 func secureBootTemplateNameToGUID(name string) (guid string, ok bool) {
 	if name == "" {
 		return "", true
 	}
-	if name == secureBootTemplateMicrosoftWindowsGUID {
-		return name, true
-	}
 	for g, n := range secureBootTemplateGUIDToName {
-		if n == name {
+		if strings.EqualFold(g, name) {
+			return name, true // 既知 GUID の入力: 表記をそのまま保つ
+		}
+		if strings.EqualFold(n, name) {
 			return g, true
 		}
 	}

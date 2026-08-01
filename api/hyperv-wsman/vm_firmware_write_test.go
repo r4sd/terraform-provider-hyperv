@@ -129,6 +129,36 @@ func TestFirmwareWriteNoop_BootSourceOrderFormatMismatch(t *testing.T) {
 	}
 }
 
+// TestFirmwareWriteNoop_EmptyBootSourceOrderIsNoChange は「要求値の BootSourceOrder が空」の場合に
+// 現行値が非空でも差分なし (no-op) と判定されることを検証する (#99)。
+//
+// PS 版の実機挙動を確認したところ `Set-VMFirmware -BootOrder @()` はエラーにならず、既存の
+// BootSourceOrder も変化しない = 空配列は「クリア」ではなく「指定なし」として扱われる。
+// go-wsman 側もこれに合わせることで、vm_firmware 未指定の Gen2 create が PS 委譲されなくなる。
+func TestFirmwareWriteNoop_EmptyBootSourceOrderIsNoChange(t *testing.T) {
+	current := &hyperv.Msvm_VirtualSystemSettingData{
+		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
+		ConsoleMode:                  hyperv.ConsoleModeDefault,
+		// create 時に NIC が先に追加され Hyper-V が自動登録した状態を模す。
+		BootSourceOrder: []string{"ref-nic"},
+	}
+	want := firmwareCIMValues{
+		networkBootProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
+		consoleMode:         hyperv.ConsoleModeDefault,
+		bootSourceOrder:     nil, // config で vm_firmware 未指定 = 既定値 (空)
+	}
+	if !firmwareWriteNoop(current, want) {
+		t.Error("要求値が空の BootSourceOrder は「指定なし」= 差分なしと判定されるべき (#99)")
+	}
+
+	// 非空同士は従来どおり比較する (指定があるなら差分を見る)。
+	wantDifferent := want
+	wantDifferent.bootSourceOrder = []string{"ref-other"}
+	if firmwareWriteNoop(current, wantDifferent) {
+		t.Error("非空で内容が異なる BootSourceOrder は差分ありと判定されるべき")
+	}
+}
+
 // TestFirmwareZeroDowngrade は marshalEmbeddedInstance がゼロ値を送信しないために go-wsman では
 // 表現できない「非ゼロ→ゼロ」遷移を正しく検出することを検証する (Slice A Fable C と同型のリスク)。
 func TestFirmwareZeroDowngrade(t *testing.T) {
@@ -175,10 +205,12 @@ func TestFirmwareZeroDowngrade(t *testing.T) {
 			wantDowngrade: true,
 		},
 		{
-			name:          "BootSourceOrder 非空→空 は非表現",
+			// #99: PS の `Set-VMFirmware -BootOrder @()` が no-change であることを実機で確認したため、
+			// 空の要求値は「クリア要求」ではなく「指定なし」。ダウングレード扱いしない。
+			name:          "BootSourceOrder 非空→空 は「指定なし」でダウングレードではない",
 			current:       &hyperv.Msvm_VirtualSystemSettingData{BootSourceOrder: []string{"ref-1"}},
 			want:          firmwareCIMValues{bootSourceOrder: nil},
-			wantDowngrade: true,
+			wantDowngrade: false,
 		},
 		{
 			name:          "全て変更なしはダウングレードではない",

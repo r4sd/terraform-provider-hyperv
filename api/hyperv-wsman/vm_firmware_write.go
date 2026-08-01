@@ -71,13 +71,21 @@ func buildFirmwareCIMValues(
 //
 // SecureBootTemplateId は GUID の大文字小文字表記がホストによって揺れうる
 // (go-wsman #103 の case-sensitivity 事故と同種、#100) ため EqualFold で比較する。
+//
+// BootSourceOrder の要求値が空の場合は「指定なし」として比較対象から外す (#99)。PS 版の
+// `Set-VMFirmware -BootOrder @()` が実機でエラーにならず既存値も変えない (= no-change) ことを
+// 確認済みで、空配列に「クリア」の意味は無い。config で vm_firmware を書かない Gen2 VM の
+// create では、NIC 追加で Hyper-V が自動登録した非空の現行値と既定の空要求値が並ぶため、
+// ここを差分と見なすと必ず PS へ委譲されていた。
 func firmwareWriteNoop(current *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) bool {
+	bootOrderSame := len(want.bootSourceOrder) == 0 ||
+		stringSlicesEqual(normalizedBootSourceOrder(current.BootSourceOrder), normalizedBootSourceOrder(want.bootSourceOrder))
 	return current.SecureBoot == want.secureBoot &&
 		strings.EqualFold(current.SecureBootTemplateId, want.secureBootTemplateGUID) &&
 		current.NetworkBootPreferredProtocol == want.networkBootProtocol &&
 		current.ConsoleMode == want.consoleMode &&
 		current.PauseAfterBootFailure == want.pauseAfterBootFailure &&
-		stringSlicesEqual(normalizedBootSourceOrder(current.BootSourceOrder), normalizedBootSourceOrder(want.bootSourceOrder))
+		bootOrderSame
 }
 
 // normalizedBootSourceOrder は BootSourceOrder[] の各要素を素の InstanceID に正規化する
@@ -99,12 +107,14 @@ func normalizedBootSourceOrder(refs []string) []string {
 // 慣習) ため、この遷移は go-wsman では反映できず「成功報告なのに変わらない」恒常 diff になる
 // (Slice A vm_processor の Fable C パターンと同型)。NetworkBootPreferredProtocol は有効値が
 // 4096/4097 でどちらも非ゼロのため対象外 (常に表現可能)。
+//
+// BootSourceOrder は対象外 (#99)。PS 版が空配列を no-change として扱う以上、空の要求値は
+// 「クリア要求」ではなく「指定なし」であり、送らないこと自体が PS とのパリティになる。
 func firmwareZeroDowngrade(current *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) bool {
 	return (current.SecureBoot && !want.secureBoot) ||
 		(current.PauseAfterBootFailure && !want.pauseAfterBootFailure) ||
 		(current.ConsoleMode != hyperv.ConsoleModeDefault && want.consoleMode == hyperv.ConsoleModeDefault) ||
-		(current.SecureBootTemplateId != "" && want.secureBootTemplateGUID == "") ||
-		(len(current.BootSourceOrder) > 0 && len(want.bootSourceOrder) == 0)
+		(current.SecureBootTemplateId != "" && want.secureBootTemplateGUID == "")
 }
 
 // applyFirmwareSettings は want を sd に反映する。sd は呼び出し側が InstanceID のみを設定した
@@ -116,7 +126,11 @@ func applyFirmwareSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want firmwa
 	sd.NetworkBootPreferredProtocol = want.networkBootProtocol
 	sd.ConsoleMode = want.consoleMode
 	sd.PauseAfterBootFailure = want.pauseAfterBootFailure
-	sd.BootSourceOrder = want.bootSourceOrder
+	// 空の要求値は「指定なし」(#99) なので touch しない。marshalEmbeddedInstance が
+	// ゼロ値を送らない挙動に依存せず、意図として明示しておく。
+	if len(want.bootSourceOrder) > 0 {
+		sd.BootSourceOrder = want.bootSourceOrder
+	}
 }
 
 func stringSlicesEqual(a, b []string) bool {

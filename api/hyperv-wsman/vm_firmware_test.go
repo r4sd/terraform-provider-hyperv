@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
@@ -34,6 +35,8 @@ func TestSecureBootTemplateIdToName(t *testing.T) {
 		want string
 	}{
 		{"MicrosoftWindows (実機確認済み)", secureBootTemplateMicrosoftWindowsGUID, "MicrosoftWindows"},
+		{"MicrosoftUEFICertificateAuthority (実機確認済み)", secureBootTemplateMicrosoftUEFICAGUID, "MicrosoftUEFICertificateAuthority"},
+		{"OpenSourceShieldedVM (実機確認済み)", secureBootTemplateOpenSourceShieldedVMGUID, "OpenSourceShieldedVM"},
 		{"未知のGUIDはそのまま返す", "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000"},
 		{"空文字はそのまま返す", "", ""},
 	}
@@ -55,7 +58,11 @@ func TestSecureBootTemplateNameToGUID(t *testing.T) {
 	}{
 		{"空文字は変更なし扱い", "", "", true},
 		{"既知のシンボル名", "MicrosoftWindows", secureBootTemplateMicrosoftWindowsGUID, true},
+		{"既知のシンボル名 (Linux 用 UEFI CA)", "MicrosoftUEFICertificateAuthority", secureBootTemplateMicrosoftUEFICAGUID, true},
+		{"既知のシンボル名 (Shielded VM)", "OpenSourceShieldedVM", secureBootTemplateOpenSourceShieldedVMGUID, true},
 		{"GUID形式の入力もそのまま通す", secureBootTemplateMicrosoftWindowsGUID, secureBootTemplateMicrosoftWindowsGUID, true},
+		{"既知GUIDの小文字表記も通す", strings.ToLower(secureBootTemplateMicrosoftUEFICAGUID), strings.ToLower(secureBootTemplateMicrosoftUEFICAGUID), true},
+		{"シンボル名の大文字小文字揺れも許容", "microsoftwindows", secureBootTemplateMicrosoftWindowsGUID, true},
 		{"未知のシンボル名はok=false", "SomeUnknownTemplate", "", false},
 	}
 	for _, tt := range tests {

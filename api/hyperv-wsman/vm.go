@@ -14,7 +14,7 @@ import (
 )
 
 // intervalISO8601Pattern は WS-Man の GET/PULL レスポンスが返す datetime(interval) 型の実機書式に
-// マッチする。実機確認 (2026-07-27、k8s-cp-01 read): "P0DT0H30M0S"。ISO 8601 duration 形式
+// マッチする。実機確認 (2026-07-27、実機 VM の read): "P0DT0H30M0S"。ISO 8601 duration 形式
 // (PnDTnHnMnS)。WS-Management が CIM datetime interval をレスポンス側で xs:duration に
 // マッピングするための wire format と考えられる。
 //

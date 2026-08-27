@@ -13,6 +13,23 @@ permissions:
   contents: read
 
 jobs:
+  # 公開リポジトリなので、実環境のアドレスがコメントや例に紛れ込むのを防ぐ。
+  # 過去に統合テストの実行例コメント経由で蓄積していた。
+  # 例示用アドレスは RFC 5737 (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) を使うこと。
+  no-private-addresses:
+    name: no private addresses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Scan tracked files for RFC 1918 addresses
+        run: |
+          if git grep -nIE '(^|[^0-9.])(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)[0-9]{1,3}\.[0-9]{1,3}' \
+               -- . ':(exclude).github/workflows/security.yml'; then
+            echo "::error::プライベート IP アドレスが含まれています。RFC 5737 の例示用アドレスかプレースホルダに置き換えてください。"
+            exit 1
+          fi
+          echo "OK: プライベート IP アドレスなし"
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

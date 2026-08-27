@@ -13,9 +13,9 @@ package provider
 //
 // 実行例:
 //
-//	HYPERV_HOST=10.0.0.100 HYPERV_USER=terraform HYPERV_PASSWORD=... \
+//	HYPERV_HOST=<hyperv-host> HYPERV_USER=<user> HYPERV_PASSWORD=... \
 //	HYPERV_PORT=5986 HYPERV_HTTPS=true HYPERV_INSECURE=true HYPERV_USE_NTLM=true \
-//	HYPERV_TEST_TARGET_VM_NAME=k8s-worker-01 \
+//	HYPERV_TEST_TARGET_VM_NAME=<既存VMの表示名> \
 //	go test -tags integration ./internal/provider/ -run TestRealHostProcessorReadWsman -v
 
 import (

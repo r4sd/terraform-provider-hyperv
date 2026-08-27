@@ -34,6 +34,46 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 - govulncheck によるセキュリティスキャン追加
 - goreleaser v2 対応
 
+## PowerShell 非依存化(移行中)
+
+このフォークは、PowerShell 経由での Hyper-V 操作を
+[go-wsman](https://github.com/r4sd/go-wsman)(Go ネイティブの WS-Man/CIM クライアント)へ
+段階的に置き換えている。**移行中のため既定は従来どおり PowerShell 経路**で、
+切り替えは環境変数で行う。
+
+| 環境変数 | 有効時の挙動 | 既定 |
+|----------|--------------|------|
+| `HYPERV_USE_WSMAN=1` | CIM 経路に切り替える。未移行の操作は PowerShell へ自動的に落ちる | 無効 |
+| `HYPERV_WSMAN_STRICT=1` | PowerShell へのフォールバックをエラーにする(PS 不使用の検証用) | 無効 |
+
+`HYPERV_WSMAN_STRICT` は `HYPERV_USE_WSMAN` が有効なときだけ意味を持つ。
+
+### 現在の移行状況
+
+| リソース | CIM 経路 |
+|----------|----------|
+| `hyperv_vhd` | ✅ 対応 |
+| `hyperv_machine_instance` | ⚠️ 一部(下記) |
+| `hyperv_network_switch` | ❌ PowerShell のみ |
+| `hyperv_iso_image` | ❌ PowerShell のみ |
+| `hyperv_cloudinit_iso` | ❌ PowerShell のみ |
+| `hyperv_vm_checkpoint` | ❌ PowerShell のみ |
+
+`hyperv_machine_instance` では、次の場合に PowerShell へ委譲される。
+
+- NIC の高度なオプション(QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング)
+- ハードディスクの高度なオプション(QoS / パススルー / カスタムプール / キャッシュ属性)
+- DVD の空メディア
+- `wait_for_ips = true`
+- チェックポイント種別の変更
+
+**`HYPERV_USE_WSMAN=1` を有効にしても PowerShell が不要になるわけではない。**
+上記に該当しない構成(Gen2・スイッチ未接続・既定値中心)であれば
+VM のライフサイクル全体を PowerShell なしで実行できることを実機で確認しているが、
+条件は狭い。
+
+移行の方式と判断の経緯は [`docs/adr/`](docs/adr/README.md) を参照。
+
 ## 動作環境
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.13.0

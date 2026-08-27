@@ -153,8 +153,7 @@ Enter-PSSession -ComputerName $hostName -Port 5986 -Credential $cred -SessionOpt
 
 ```hcl
 variable "hyperv_user" {
-  type    = string
-  default = "terraform"
+  type = string
 }
 
 variable "hyperv_password" {

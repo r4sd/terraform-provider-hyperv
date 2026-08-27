@@ -25,7 +25,7 @@ Terraform から Hyper-V を管理する既存の選択肢を評価した。
 
 いずれも **Go プロセスから PowerShell を起動して Hyper-V を操作する**構造で、
 そこから来る問題(バージョン差・エラーが文字列・型の喪失・失敗箇所の切り分け困難)を抱えていた。
-詳しくは go-wsman 側の [ADR-0001](https://github.com/r4sd/go-wsman/blob/main/docs/adr/0001-powershell-free.md) に記録している。
+詳しくは [go-wsman](https://github.com/r4sd/go-wsman) 側の ADR-0001「PowerShell に依存しない理由」に記録している。
 
 ### 選択肢と評価
 

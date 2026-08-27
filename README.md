@@ -52,25 +52,55 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 
 | リソース | CIM 経路 |
 |----------|----------|
-| `hyperv_vhd` | ✅ 対応 |
+| `hyperv_vhd` | ✅ 対応(`source` / `source_vm` 指定時は PowerShell) |
 | `hyperv_machine_instance` | ⚠️ 一部(下記) |
 | `hyperv_network_switch` | ❌ PowerShell のみ |
 | `hyperv_iso_image` | ❌ PowerShell のみ |
 | `hyperv_cloudinit_iso` | ❌ PowerShell のみ |
 | `hyperv_vm_checkpoint` | ❌ PowerShell のみ |
 
-`hyperv_machine_instance` では、次の場合に PowerShell へ委譲される。
+### CIM 経路で扱えない入力の 2 通りの挙動
 
-- NIC の高度なオプション(QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング)
-- ハードディスクの高度なオプション(QoS / パススルー / カスタムプール / キャッシュ属性)
-- DVD の空メディア
-- `wait_for_ips = true`
-- チェックポイント種別の変更
+**挙動が 2 種類あり、利用者から見た結果が大きく違う。**
+
+#### A. 自動で PowerShell に落ちる(何もしなくても動く)
+
+| 条件 | 備考 |
+|------|------|
+| **OS インストール済み Gen2 VM の firmware read** | **最も頻繁に踏む**。Windows Boot Manager の boot entry を CIM 側が解釈できないため。plan / refresh のたびに発生する |
+| `wait_for_ips = true` | |
+| 非ゼロ → 0 / false へのダウングレード | CIM はゼロ値を送れず黙殺されるため、意図的に委譲する |
+| `secure_boot_template` が未知の GUID / 名前 | 既知の対応表に無いもの |
+| `gpu_adapters` が非空 | 割り当ての CIM 実装が未着手 |
+| `hyperv_vhd` の `source` / `source_vm` 指定 | ファイルコピー / VM ディスクキャプチャは CIM の範囲外 |
+
+#### B. エラーで停止する(`HYPERV_USE_WSMAN` を外す必要がある)
+
+**こちらは apply が失敗する。** 黙って PowerShell に落ちることはしない
+(気付かないまま設定が反映されない事故を避けるため)。
+
+| 条件 | 備考 |
+|------|------|
+| NIC の高度なオプション | QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング / PacketDirect |
+| ハードディスクの高度なオプション | QoS / パススルー / カスタムプール / キャッシュ属性 / 永続予約 |
+| DVD の空メディア(ISO 未指定) | |
+| チェックポイント種別の変更 | `checkpoint_type` / `automatic_checkpoints_enabled` の更新 |
+
+**VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
+
+### PowerShell 0 件で通る条件
 
 **`HYPERV_USE_WSMAN=1` を有効にしても PowerShell が不要になるわけではない。**
-上記に該当しない構成(Gen2・スイッチ未接続・既定値中心)であれば
-VM のライフサイクル全体を PowerShell なしで実行できることを実機で確認しているが、
-条件は狭い。
+
+フルライフサイクルが PowerShell 0 件で通ることは実機で確認しているが、
+成立する構成は狭く、次をすべて満たす場合に限られる。
+
+- Gen2 VM で、**OS を入れていない**こと(入れると firmware read が PowerShell に落ちる)
+- NIC がスイッチに接続されていないこと(go-wsman [#114](https://github.com/r4sd/go-wsman/issues/114) の既知バグ)
+- `wait_for_ips = false`
+- プロセッサとファームウェアが既定値のまま
+
+つまり現時点では**使い捨ての検証用 VM でのみ成立する**。実運用の構成では PowerShell が動く。
 
 移行の方式と判断の経緯は [`docs/adr/`](docs/adr/README.md) を参照。
 

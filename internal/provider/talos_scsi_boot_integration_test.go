@@ -54,9 +54,10 @@ func TestRealHostTalosScsiBootWsman(t *testing.T) {
 	ctx := context.Background()
 
 	const vmName = "tf-wsman-talos-scsi-boot-test"
+	// ISO の置き場所は環境ごとに違うので既定値を持たない (他の acc test と同じ扱い)。
 	isoPath := os.Getenv("HYPERV_TEST_TALOS_ISO")
 	if isoPath == "" {
-		isoPath = `H:\ISO\metal-amd64.iso` // homelab の talos_iso_path と一致
+		t.Skip("HYPERV_TEST_TALOS_ISO 未設定 (実機上の Talos ISO のパス)")
 	}
 
 	// ISO が実機に無ければスキップ (テスト対象外の前提条件)。

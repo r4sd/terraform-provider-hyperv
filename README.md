@@ -34,6 +34,76 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 - govulncheck によるセキュリティスキャン追加
 - goreleaser v2 対応
 
+## PowerShell 非依存化(移行中)
+
+このフォークは、PowerShell 経由での Hyper-V 操作を
+[go-wsman](https://github.com/r4sd/go-wsman)(Go ネイティブの WS-Man/CIM クライアント)へ
+段階的に置き換えている。**移行中のため既定は従来どおり PowerShell 経路**で、
+切り替えは環境変数で行う。
+
+| 環境変数 | 有効時の挙動 | 既定 |
+|----------|--------------|------|
+| `HYPERV_USE_WSMAN=1` | CIM 経路に切り替える。未移行の操作は PowerShell へ自動的に落ちる | 無効 |
+| `HYPERV_WSMAN_STRICT=1` | PowerShell へのフォールバックをエラーにする(PS 不使用の検証用) | 無効 |
+
+`HYPERV_WSMAN_STRICT` は `HYPERV_USE_WSMAN` が有効なときだけ意味を持つ。
+
+### 現在の移行状況
+
+| リソース | CIM 経路 |
+|----------|----------|
+| `hyperv_vhd` | ✅ 対応(`source` / `source_vm` 指定時は PowerShell) |
+| `hyperv_machine_instance` | ⚠️ 一部(下記) |
+| `hyperv_network_switch` | ❌ PowerShell のみ |
+| `hyperv_iso_image` | ❌ PowerShell のみ |
+| `hyperv_cloudinit_iso` | ❌ PowerShell のみ |
+| `hyperv_vm_checkpoint` | ❌ PowerShell のみ |
+
+### CIM 経路で扱えない入力の 2 通りの挙動
+
+**挙動が 2 種類あり、利用者から見た結果が大きく違う。**
+
+#### A. 自動で PowerShell に落ちる(何もしなくても動く)
+
+| 条件 | 備考 |
+|------|------|
+| **OS インストール済み Gen2 VM の firmware read** | **最も頻繁に踏む**。Windows Boot Manager の boot entry を CIM 側が解釈できないため。plan / refresh のたびに発生する |
+| `wait_for_ips = true` | |
+| 非ゼロ → 0 / false へのダウングレード | CIM はゼロ値を送れず黙殺されるため、意図的に委譲する |
+| `secure_boot_template` が未知の GUID / 名前 | 既知の対応表に無いもの |
+| `gpu_adapters` が非空 | 割り当ての CIM 実装が未着手 |
+| `hyperv_vhd` の `source` / `source_vm` 指定 | ファイルコピー / VM ディスクキャプチャは CIM の範囲外 |
+
+#### B. エラーで停止する(`HYPERV_USE_WSMAN` を外す必要がある)
+
+**こちらは apply が失敗する。** 黙って PowerShell に落ちることはしない
+(気付かないまま設定が反映されない事故を避けるため)。
+
+| 条件 | 備考 |
+|------|------|
+| NIC の高度なオプション | QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング / PacketDirect |
+| ハードディスクの高度なオプション | QoS / パススルー / カスタムプール / キャッシュ属性 / 永続予約 |
+| DVD の空メディア(ISO 未指定) | |
+| チェックポイント種別の変更 | `checkpoint_type` / `automatic_checkpoints_enabled` の更新 |
+
+**VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
+
+### PowerShell 0 件で通る条件
+
+**`HYPERV_USE_WSMAN=1` を有効にしても PowerShell が不要になるわけではない。**
+
+フルライフサイクルが PowerShell 0 件で通ることは実機で確認しているが、
+成立する構成は狭く、次をすべて満たす場合に限られる。
+
+- Gen2 VM で、**OS を入れていない**こと(入れると firmware read が PowerShell に落ちる)
+- NIC がスイッチに接続されていないこと(go-wsman [#114](https://github.com/r4sd/go-wsman/issues/114) の既知バグ)
+- `wait_for_ips = false`
+- プロセッサとファームウェアが既定値のまま
+
+つまり現時点では**使い捨ての検証用 VM でのみ成立する**。実運用の構成では PowerShell が動く。
+
+移行の方式と判断の経緯は [`docs/adr/`](docs/adr/README.md) を参照。
+
 ## 動作環境
 
 - [Terraform](https://www.terraform.io/downloads.html) >= 1.13.0
@@ -113,8 +183,7 @@ Enter-PSSession -ComputerName $hostName -Port 5986 -Credential $cred -SessionOpt
 
 ```hcl
 variable "hyperv_user" {
-  type    = string
-  default = "terraform"
+  type = string
 }
 
 variable "hyperv_password" {

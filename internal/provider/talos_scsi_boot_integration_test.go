@@ -22,7 +22,7 @@ package provider
 //
 // 実行例:
 //
-//	HYPERV_HOST=10.0.0.100 HYPERV_USER=terraform HYPERV_PASSWORD=... \
+//	HYPERV_HOST=<hyperv-host> HYPERV_USER=<user> HYPERV_PASSWORD=... \
 //	HYPERV_PORT=5986 HYPERV_HTTPS=true HYPERV_INSECURE=true HYPERV_USE_NTLM=true \
 //	HYPERV_TEST_ALLOW_MUTATION=1 \
 //	go test -tags integration ./internal/provider/ -run TestRealHostTalosScsiBootWsman -v -timeout 400s
@@ -54,9 +54,10 @@ func TestRealHostTalosScsiBootWsman(t *testing.T) {
 	ctx := context.Background()
 
 	const vmName = "tf-wsman-talos-scsi-boot-test"
+	// ISO の置き場所は環境ごとに違うので既定値を持たない (他の acc test と同じ扱い)。
 	isoPath := os.Getenv("HYPERV_TEST_TALOS_ISO")
 	if isoPath == "" {
-		isoPath = `H:\ISO\metal-amd64.iso` // homelab の talos_iso_path と一致
+		t.Skip("HYPERV_TEST_TALOS_ISO 未設定 (実機上の Talos ISO のパス)")
 	}
 
 	// ISO が実機に無ければスキップ (テスト対象外の前提条件)。

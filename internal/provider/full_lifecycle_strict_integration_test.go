@@ -25,7 +25,7 @@ package provider
 //
 // 実行例:
 //
-//	HYPERV_HOST=10.0.0.100 HYPERV_USER=terraform HYPERV_PASSWORD=... \
+//	HYPERV_HOST=<hyperv-host> HYPERV_USER=<user> HYPERV_PASSWORD=... \
 //	HYPERV_PORT=5986 HYPERV_HTTPS=true HYPERV_INSECURE=true HYPERV_USE_NTLM=true \
 //	go test -tags integration ./internal/provider/ -run TestRealHostFullLifecycleStrictPS0 -v
 

@@ -1,5 +1,23 @@
 # terraform-provider-hyperv — Claude Code 作業規約
 
+## このファイルの位置づけ
+
+**ここは「今どう開発するか」だけを書く。** 経緯や却下した案は書かない(古い記述が残ると、どれが現行か分からなくなるため)。
+
+| 知りたいこと | 見る場所 |
+|---|---|
+| **使い方・移行状況** | [`README.md`](README.md) |
+| **今どう開発するか** | このファイル(常に最新だけ。古い記述は上書きする) |
+| **なぜそう決めたか / なぜやらないのか** | [`docs/adr/`](docs/adr/README.md)(追記のみ。過去の判断を消さない) |
+| **リソースのリファレンス** | `docs/resources/`, `docs/data-sources/`(terraform-plugin-docs が生成) |
+
+> ⚠️ **公開リポジトリ。** 実環境のアドレス・ホスト名・アカウント名・VM 名を書かない。
+> 例示は RFC 5737 の文書用アドレスかプレースホルダを使う。
+> **CI が落とせるのはプライベート IP だけ**(`no-private-addresses`)。
+> ホスト名・アカウント名・VM 名・ドライブパスは自分で気を付ける。
+
+---
+
 ## プロジェクト文脈
 
 taliesins/terraform-provider-hyperv の soft-fork(module path は taliesins のまま、homelab は

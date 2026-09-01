@@ -1,0 +1,101 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "timezone": "Asia/Tokyo",
+  "dependencyDashboard": true,
+  "labels": [
+    "dependencies"
+  ],
+  "packageRules": [
+    {
+      "description": "モジュール依存の更新は Dependabot が担当する。二重に PR が立たないよう Renovate 側は無効化する",
+      "matchManagers": [
+        "gomod"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "go.mod の go ディレクティブだけは Renovate が担当する。Dependabot は Go 本体のバージョンを更新できないため (公式ドキュメントに gomod ecosystem での go ディレクティブ更新の記載が無い)",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "enabled": true,
+      "rangeStrategy": "bump"
+    },
+    {
+      "description": "Go の minor revision (1.26.6 → 1.26.7) は自動マージする。Go 公式のリリースポリシーで、この更新に含まれるのはセキュリティ修正とバグ修正のみと定められており、言語仕様や新機能は入らない。実際 govulncheck の指摘はこの更新で解消する",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "description": "Go のメジャーリリース (1.26 → 1.27) は自動マージしない。新機能・vet の追加・標準ライブラリの挙動変更が入るため人手で確認する",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchDepTypes": [
+        "golang"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "automerge": false
+    },
+    {
+      "description": ".go-version の minor revision も go.mod と同じ扱いにする",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "automerge": true,
+      "platformAutomerge": true
+    },
+    {
+      "description": ".go-version のメジャーリリースは人手で確認する",
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepNames": [
+        "go"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
+      ],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": ".go-version は setup-go が参照する。go.mod の go ディレクティブと食い違うと CI と実際のビルドで Go のバージョンがずれる",
+      "fileMatch": [
+        "^\\.go-version$"
+      ],
+      "matchStrings": [
+        "^(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s*$"
+      ],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version"
+    }
+  ]
+}

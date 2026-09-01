@@ -200,9 +200,18 @@ jobs:
 
     - run: go generate ./...
     - name: Check for Git Differences
+      # git diff --exit-code だけでは追跡済みファイルの変更しか見ない。
+      # 生成器が新しいファイルを作った場合 (リソースを追加したのに docs を
+      # 生成し忘れた場合) は未追跡ファイルになるため素通りしてしまい、
+      # 実際に cloudinit_iso / vm_checkpoint のリファレンスが欠けたまま
+      # このチェックが緑を返し続けていた。未追跡分も見る。
       run: |
-        git diff --exit-code || \
-          (echo; echo "Unexpected difference in directories after code generation. Run 'go generate ./...' command and commit."; exit 1)
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "Unexpected difference in directories after code generation."
+          echo "Run 'go generate ./...' command and commit."
+          git status --porcelain
+          exit 1
+        fi
 
   go_test:
     name: go test

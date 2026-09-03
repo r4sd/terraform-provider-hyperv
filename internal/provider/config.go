@@ -257,14 +257,9 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 		// go-wsman シャドウ未実装の経路が 1 件でも呼ばれたら即エラーにし、v2.0「Home-env PS-free」の
 		// 陽性証明(homelab が使う経路の PS 呼び出し 0 件)を検証できるようにする。
 		//
-		// 現状で PS-0 になる範囲: Gen1 VM かつ全 network_adapter が wait_for_ips=false の refresh/plan
-		// (vm_processor/integration_services の create/update 書き込みは差分なしガードで既定 config
-		// なら PS-0、#88/#95)。Gen2 の firmware read はスカラーフィールドはシャドウ済みだが、
-		// BootSourceOrder が非空 (ブート可能デバイスが付いている VM) なら PS へ委譲する (#96、
-		// BootSourceOrder→デバイス相関ロジックは未実装のため)。
-		// PS フォールバックが残る経路(strict でエラーになる): 上記 BootSourceOrder 非空の firmware
-		// read、wait_for_ips=true(WaitForVmNetworkAdaptersIps が PS 委譲、#76)、vm_firmware の
-		// create/update 書き込み(write は未着手)。
+		// PS-0 が成立する条件と、PS へ委譲/エラーになる経路の一覧は README の
+		// 「PowerShell 非依存化(移行中)」に集約している。現況スナップショットをここに
+		// 書くと実装より先に陳腐化するため、この位置には置かない (#126)。
 		if strictNoPSEnabled() {
 			log.Printf("[WARN][hyperv] HYPERV_WSMAN_STRICT enabled. PowerShell フォールバックは全て fail-fast エラーになります。")
 			winrmConfig.WinRmClient = &hyperv_wsman.StrictNoPSClient{}

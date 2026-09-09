@@ -17,6 +17,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
@@ -138,10 +139,20 @@ func TestRealHostVmCheckpointWsman(t *testing.T) {
 		}
 		t.Logf("⑤b VM 状態 EnabledState=%d (2=Running)", running.EnabledState)
 
+		// CIM の ApplySnapshot は稼働中 VM を受け付けない (種別に関係なく 32775)。
+		// PS へ委譲して復元できること、かつ **スナップショット時点の状態に戻る**ことを見る。
+		// Production チェックポイントは仕様上、復元後は停止状態になる。
 		if err := cc.RestoreVmCheckpoint(ctx, vmName, cpName); err != nil {
 			t.Fatalf("🔴 稼働中 VM の復元が失敗する。restore_on_destroy が実運用で使えない: %v", err)
 		}
-		t.Logf("🎯 稼働中 VM でも復元できる (restore_on_destroy が実用になる)")
+		restored, err := cc.WsmanClient.FindComputerSystemByElementName(ctx, vmName)
+		if err != nil {
+			t.Fatalf("Find (restored): %v", err)
+		}
+		t.Logf("🎯 稼働中 VM でも復元できる (PS 委譲)。復元後の EnabledState=%d", restored.EnabledState)
+		if restored.EnabledState != hyperv.EnabledStateDisabled {
+			t.Errorf("Production チェックポイントの復元後は停止状態のはず (got %d)", restored.EnabledState)
+		}
 
 		// 後片付け: 停止に戻す。
 		if jr, err := cc.WsmanClient.TurnOffVM(ctx, cs.Name); err == nil {

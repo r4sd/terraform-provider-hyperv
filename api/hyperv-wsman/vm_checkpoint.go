@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -230,30 +231,26 @@ func (c *ClientConfig) RestoreVmCheckpoint(ctx context.Context, vmName string, c
 	if cp == nil {
 		return fmt.Errorf("hyperv-wsman: RestoreVmCheckpoint %q: チェックポイント %q が見つからない", vmName, checkpointName)
 	}
-	// ApplySnapshot は稼働中 VM を受け付けず ReturnValue=32775 (Invalid State) を返す
-	// (実機確認)。PS 版の Restore-VMSnapshot は稼働中でも成功し、VM はスナップショット
-	// 時点の状態になる (実機で Running → 復元 → Off を確認) ので、内部で停止を挟んで
-	// いるとみられる。パリティのため同じ挙動にする。
+	// ApplySnapshot は **スナップショット種別に関係なく** 稼働中 VM を受け付けず
+	// ReturnValue=32775 (Invalid State) を返す (実機確認: Production / Standard の両方)。
 	//
-	// 復元は現在の状態を捨てる操作なので、強制停止で意味論は崩れない。
-	// restore_on_destroy はカオスエンジニアリング用途で対象が稼働中 VM のため、
-	// ここが無いとリソース本来の使い道で動かない。
-	guid, err := c.resolveVMGUID(ctx, vmName)
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: RestoreVmCheckpoint %q: %w", vmName, err)
-	}
+	// 一方 PS の Restore-VMSnapshot は稼働中でも成功し、**スナップショット時点の状態に
+	// 戻す**。実機で確認した挙動:
+	//
+	//	Production を Running な VM に復元 → Off   (Production は仕様上停止状態で復帰)
+	//	Standard   を Running な VM に復元 → Running (稼働状態が維持される)
+	//
+	// CIM 側で停止を挟んで擬似的に実現すると、Standard の「稼働状態を維持する」挙動を
+	// 黙って壊すことになる。表現できない変更は PS へ委譲する、という本プロジェクトの
+	// 方針 (vmLevelZeroDowngrade と同じ) に合わせる。
 	cs, err := c.WsmanClient.FindComputerSystemByElementName(ctx, vmName)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: RestoreVmCheckpoint %q: get state: %w", vmName, err)
 	}
 	if cs.EnabledState != hyperv.EnabledStateDisabled {
-		offJob, err := c.WsmanClient.TurnOffVM(ctx, guid)
-		if err != nil {
-			return fmt.Errorf("hyperv-wsman: RestoreVmCheckpoint %q: 復元前の停止: %w", vmName, err)
-		}
-		if err := c.WsmanClient.WaitForJob(ctx, offJob); err != nil {
-			return fmt.Errorf("hyperv-wsman: RestoreVmCheckpoint %q: 復元前の停止待ち: %w", vmName, err)
-		}
+		log.Printf("[DEBUG][hyperv-wsman] RestoreVmCheckpoint %q: VM が稼働中のため PS へ委譲します "+
+			"(CIM の ApplySnapshot は稼働中 VM を受け付けない)", vmName)
+		return c.ClientConfig.RestoreVmCheckpoint(ctx, vmName, checkpointName)
 	}
 
 	jobRef, err := c.WsmanClient.ApplyVmCheckpoint(ctx, cp.InstanceID)

@@ -74,6 +74,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | `gpu_adapters` が非空 | 割り当ての CIM 実装が未着手 |
 | `automatic_checkpoints_enabled` を true → false | false は CIM で送れないため(`checkpoint_type` は CIM で変更できる) |
 | `hyperv_vhd` の `source` / `source_vm` 指定 | ファイルコピー / VM ディスクキャプチャは CIM の範囲外 |
+| 稼働中 VM のチェックポイント復元 | CIM の `ApplySnapshot` は種別に関係なく稼働中 VM を受け付けない(`ReturnValue=32775`)。PowerShell はスナップショット時点の状態へ戻せるため委譲する |
 
 #### B. エラーで停止する(`HYPERV_USE_WSMAN` を外す必要がある)
 
@@ -93,6 +94,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | 項目 | PowerShell | CIM |
 |------|-----------|-----|
 | `hyperv_vm_checkpoint` の `creation_time` | ローカル時刻 + オフセット(`2026-09-10T01:20:31.4447620+09:00`) | UTC(`2026-09-09T16:20:31.444762Z`) |
+| 稼働中 VM の復元後の状態 | スナップショット時点の状態(Standard なら Running のまま) | 同左(PowerShell へ委譲するため) |
 
 同じ瞬間を指すが文字列表現が異なる。`creation_time` は Computed なので plan の差分にはならないが、
 PowerShell 時代の state を `HYPERV_USE_WSMAN=1` で refresh すると state 上の値が書き換わる。

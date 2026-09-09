@@ -200,8 +200,10 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		SnapshotFileLocation:    sd.SnapshotDataRoot,
 		SmartPagingFilePath:     sd.SwapFileDataRoot,
 		// UserSnapshotType(CIM) は Microsoft.HyperV.PowerShell.CheckpointType と数値が
-		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write 側は #46 に延期。
+		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write は #125 で実装済み。
 		CheckpointType: checkpointType,
+		// #134: 未マッピングだったため read が常に false を返していた。
+		AutomaticCheckpointsEnabled: sd.AutomaticSnapshotsEnabled,
 
 		// 以下は本メソッドでは未設定 (ゼロ値):
 		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount /
@@ -209,34 +211,9 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		//     Msvm_MemorySettingData / Msvm_ProcessorSettingData を別途取得して合成、
 		//     AutomaticCriticalErrorActionTimeout は sd.AutomaticCriticalErrorActionTimeout
 		//     (CIM datetime/interval 文字列) を parseIntervalMinutes で分に変換する。
-		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要だが go-wsman の
-		//     CIM 構造体に未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
-		//   - AutomaticCheckpointsEnabled: v2.1 (#46) に延期。
+		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要 (#133 で追跡。
+		//     go-wsman types.go には AutomaticStartupActionDelay が既に存在する)。
 	}, nil
-}
-
-// validateCheckpointFieldsUnchanged は checkpointType/automaticCheckpointsEnabled が現在値と
-// 一致するか検証する。WS-Man 経由の変更適用は未実装 (#46) のため、黙って無視すると
-// 「read→drift→shutdown→書き込みは no-op→再起動後も drift」のループになる
-// (Fable 批判的レビュー指摘)。UpdateVm から呼ぶ。
-func validateCheckpointFieldsUnchanged(
-	wantCheckpointType api.CheckpointType,
-	wantAutomaticCheckpointsEnabled bool,
-	cur *hyperv.Msvm_VirtualSystemSettingData,
-) error {
-	curCheckpointType, err := checkpointTypeFromUserSnapshotType(cur.UserSnapshotType)
-	if err != nil {
-		return fmt.Errorf("checkpoint_type: %w", err)
-	}
-	if wantCheckpointType != curCheckpointType {
-		return fmt.Errorf("checkpoint_type の変更 (%s→%s) は WS-Man 経路で未実装 (#46)。HYPERV_USE_WSMAN=0 (PS 経路) を使うこと",
-			curCheckpointType, wantCheckpointType)
-	}
-	if wantAutomaticCheckpointsEnabled != cur.AutomaticSnapshotsEnabled {
-		return fmt.Errorf("automatic_checkpoints_enabled の変更 (%t→%t) は WS-Man 経路で未実装 (#46)。HYPERV_USE_WSMAN=0 (PS 経路) を使うこと",
-			cur.AutomaticSnapshotsEnabled, wantAutomaticCheckpointsEnabled)
-	}
-	return nil
 }
 
 // checkpointTypeFromUserSnapshotType は CIM の UserSnapshotType を api.CheckpointType に
@@ -244,6 +221,31 @@ func validateCheckpointFieldsUnchanged(
 // エラーを返す。ここを黙って通すと api.CheckpointType.String() が空文字列を返し、#106 の
 // 恒常 drift (schema Default との不一致で毎 plan diff → apply 毎に VM 強制シャットダウン) が
 // 無音で再発するため fail-loud にする (Fable 批判的レビュー指摘)。
+// checkpointTypeFromUserSnapshotType / userSnapshotTypeFromCheckpointType は
+// CIM の UserSnapshotType と api.CheckpointType を相互変換する。両者は #106 で MOF 突合済みの
+// 数値一致 (2..5)。既知の値以外は黙って通さず fail-loud にする。
+//
+// userSnapshotTypeFromCheckpointType は書き込み方向。ゼロ値は「未指定」を意味し、
+// 呼び出し側が送信をスキップする。
+//
+// api.CheckpointType は int (アーキ依存幅) なので uint16 へキャストせず、既知の値ごとに
+// go-wsman の定数を返す。範囲検証を挟んでも静的解析はキャストの安全性を追えず、
+// CodeQL の go/incorrect-integer-conversion に引っかかる。
+func userSnapshotTypeFromCheckpointType(ct api.CheckpointType) (uint16, error) {
+	switch ct {
+	case api.CheckpointType_Disabled:
+		return hyperv.UserSnapshotTypeDisable, nil
+	case api.CheckpointType_Production:
+		return hyperv.UserSnapshotTypeProductionFallbackToTest, nil
+	case api.CheckpointType_ProductionOnly:
+		return hyperv.UserSnapshotTypeProductionNoFallback, nil
+	case api.CheckpointType_Standard:
+		return hyperv.UserSnapshotTypeTest, nil
+	default:
+		return 0, fmt.Errorf("未知の checkpoint_type 値 %d (既知範囲は 2-5)", ct)
+	}
+}
+
 func checkpointTypeFromUserSnapshotType(v uint16) (api.CheckpointType, error) {
 	ct := api.CheckpointType(v)
 	if _, ok := api.CheckpointType_name[ct]; !ok {
@@ -374,7 +376,8 @@ func (c *ClientConfig) CreateVm(
 	sd, err := vmSettingDataForCreate(name, path, generation,
 		automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
 		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect,
-		lowMemoryMappedIoSpace, notes, smartPagingFilePath, snapshotFileLocation)
+		lowMemoryMappedIoSpace, notes, smartPagingFilePath, snapshotFileLocation,
+		checkpointType, automaticCheckpointsEnabled)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVm %q: %w", name, err)
 	}
@@ -440,11 +443,13 @@ func (c *ClientConfig) CreateVm(
 // CIM の ModifySystemSettings はゼロ値フィールドを「変更なし」とみなすため、各フィールドは
 // 新しい値で上書きする (CreateVm と enum/メモリ変換ロジックを共有)。
 //
-// 未適用: automaticStartDelay (CreateVm と同じ理由、#102 スコープ外)。checkpointType /
-// automaticCheckpointsEnabled は書き込み自体が v2.1 (#46) まで未実装だが、変更要求を
-// 黙って無視すると「read→drift→shutdown→書き込みは no-op」のループになるため、
-// 現在値との不一致を検知したら明示エラーで PS 経路への委譲を促す
-// (validateCheckpointFieldsUnchanged、Fable 批判的レビュー指摘)。
+// 未適用: automaticStartDelay (CreateVm と同じ理由、#102 スコープ外)。
+//
+// checkpointType は CIM の UserSnapshotType として書き込む (#125)。有効値が 2..5 で
+// ゼロ値が無いため marshalEmbeddedInstance のゼロ値スキップに掛からない (実機確認)。
+// automaticCheckpointsEnabled は true なら書けるが false はゼロ値のため送れないので、
+// true→false は下記のゼロ値ダウングレード判定が拾って PS へ委譲する
+// (根本解は go-wsman #135 の「明示的にゼロ値を送る手段」)。
 //
 // 非ゼロ→0 / true→false のダウングレードは marshalEmbeddedInstance がゼロ値を送らないため
 // CIM で表現できない。vmLevelZeroDowngrade で検知し、書き込み前に PS 経路へ丸ごと委譲する
@@ -487,9 +492,6 @@ func (c *ClientConfig) UpdateVm(
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get settings: %w", name, err)
 	}
-	if err := validateCheckpointFieldsUnchanged(checkpointType, automaticCheckpointsEnabled, cur); err != nil {
-		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
-	}
 
 	// メモリ設定は後段でも使うが、ゼロ値ダウングレード判定に現行の DynamicMemoryEnabled が
 	// 要るため先に取得する。
@@ -501,19 +503,22 @@ func (c *ClientConfig) UpdateVm(
 	// ゼロ値ダウングレードは CIM で表現できないため、書き込みを 1 件も行わずに PS へ委譲する
 	// (#132)。ここで委譲しないと「成功報告なのに実機は変わらない」恒常 diff になり、
 	// apply のたびに VM が停止する。
-	if vmLevelZeroDowngrade(cur, mem, vmLevelWant{
-		criticalErrorAction:       automaticCriticalErrorAction,
-		startAction:               automaticStartAction,
-		stopAction:                automaticStopAction,
-		guestControlledCacheTypes: guestControlledCacheTypes,
-		highMmioGapSize:           highMemoryMappedIoSpace,
-		lockOnDisconnect:          lockOnDisconnect,
-		lowMmioGapSize:            lowMemoryMappedIoSpace,
-		notes:                     notes,
-		smartPagingFilePath:       smartPagingFilePath,
-		snapshotFileLocation:      snapshotFileLocation,
-		staticMemory:              staticMemory,
-	}) {
+	want := vmLevelWant{
+		criticalErrorAction:         automaticCriticalErrorAction,
+		startAction:                 automaticStartAction,
+		stopAction:                  automaticStopAction,
+		guestControlledCacheTypes:   guestControlledCacheTypes,
+		highMmioGapSize:             highMemoryMappedIoSpace,
+		lockOnDisconnect:            lockOnDisconnect,
+		lowMmioGapSize:              lowMemoryMappedIoSpace,
+		notes:                       notes,
+		smartPagingFilePath:         smartPagingFilePath,
+		snapshotFileLocation:        snapshotFileLocation,
+		staticMemory:                staticMemory,
+		checkpointType:              checkpointType,
+		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
+	}
+	if vmLevelZeroDowngrade(cur, mem, want) {
 		log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
 		return c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
@@ -526,9 +531,9 @@ func (c *ClientConfig) UpdateVm(
 	}
 
 	sd := &hyperv.Msvm_VirtualSystemSettingData{InstanceID: cur.InstanceID}
-	applyVmLevelSettings(sd, automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
-		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace,
-		notes, smartPagingFilePath, snapshotFileLocation)
+	if err := applyVmLevelSettings(sd, want); err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
+	}
 	if jobRef, err := c.WsmanClient.UpdateVm(ctx, sd); err != nil {
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: modify settings: %w", name, err)
 	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
@@ -623,6 +628,8 @@ func vmSettingDataForCreate(
 	lockOnDisconnect api.OnOffState,
 	lowMmioGapSize uint32,
 	notes, smartPagingFilePath, snapshotFileLocation string,
+	checkpointType api.CheckpointType,
+	automaticCheckpointsEnabled bool,
 ) (*hyperv.Msvm_VirtualSystemSettingData, error) {
 	subType, err := vmSubTypeFromGeneration(generation)
 	if err != nil {
@@ -633,14 +640,29 @@ func vmSettingDataForCreate(
 		VirtualSystemSubType:  subType,
 		ConfigurationDataRoot: path,
 	}
-	applyVmLevelSettings(sd, criticalErrorAction, startAction, stopAction,
-		guestControlledCacheTypes, highMmioGapSize, lockOnDisconnect, lowMmioGapSize,
-		notes, smartPagingFilePath, snapshotFileLocation)
+	if err := applyVmLevelSettings(sd, vmLevelWant{
+		criticalErrorAction:         criticalErrorAction,
+		startAction:                 startAction,
+		stopAction:                  stopAction,
+		guestControlledCacheTypes:   guestControlledCacheTypes,
+		highMmioGapSize:             highMmioGapSize,
+		lockOnDisconnect:            lockOnDisconnect,
+		lowMmioGapSize:              lowMmioGapSize,
+		notes:                       notes,
+		smartPagingFilePath:         smartPagingFilePath,
+		snapshotFileLocation:        snapshotFileLocation,
+		checkpointType:              checkpointType,
+		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
+	}); err != nil {
+		return nil, err
+	}
 	return sd, nil
 }
 
-// vmLevelWant は UpdateVm が要求する VM レベル設定 + メモリ方式をまとめたもの。
-// ゼロ値ダウングレード判定 (vmLevelZeroDowngrade) の引数を短く保つために使う。
+// vmLevelWant は Create/Update が要求する VM レベル設定 + メモリ方式をまとめたもの。
+// applyVmLevelSettings の入力と vmLevelZeroDowngrade の判定材料を兼ねる。
+// 同型の引数 (bool 複数・string 複数) が位置指定で並ぶと取り違えてもコンパイルが通るため、
+// 構造体で受け渡す。
 type vmLevelWant struct {
 	criticalErrorAction       api.CriticalErrorAction
 	startAction               api.StartAction
@@ -655,6 +677,12 @@ type vmLevelWant struct {
 	smartPagingFilePath  string
 	snapshotFileLocation string
 	staticMemory         bool
+	// checkpoint 系。UserSnapshotType は有効値が 2..5 でゼロ値が無いため
+	// marshalEmbeddedInstance のゼロ値スキップに掛からず、そのまま送信できる (実機確認)。
+	// automaticCheckpointsEnabled は false がゼロ値のため送れず、true→false は PS 委譲になる
+	// (go-wsman #135 が根本解)。
+	checkpointType              api.CheckpointType
+	automaticCheckpointsEnabled bool
 }
 
 // vmLevelZeroDowngrade は要求が現行に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。
@@ -699,6 +727,10 @@ func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyp
 	// schema 既定も非空 (C:\ProgramData\Microsoft\Windows\Hyper-V) のため resource 層から
 	// 空が来ることは無い。加えて委譲先の Set-VM 自体が空文字を受け付けず
 	// ParameterArgumentValidationError になる (実機確認) ので、委譲しても救えない。
+	// automatic_checkpoints_enabled の true→false も false がゼロ値のため送れない。
+	if !want.automaticCheckpointsEnabled && cur.AutomaticSnapshotsEnabled {
+		return true
+	}
 	// applyMemorySettings は staticMemory 時に DynamicMemoryEnabled=false を代入するが、
 	// これもゼロ値のため送られない。動的→静的の切り替えは PS でしか表現できない。
 	if want.staticMemory && curMem != nil && curMem.DynamicMemoryEnabled {
@@ -715,35 +747,36 @@ func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyp
 //
 // AutomaticCriticalErrorActionTimeout の書き込みは未実装 (#102、intervalISO8601Pattern の
 // コメント参照)。
-func applyVmLevelSettings(
-	sd *hyperv.Msvm_VirtualSystemSettingData,
-	criticalErrorAction api.CriticalErrorAction,
-	startAction api.StartAction,
-	stopAction api.StopAction,
-	guestControlledCacheTypes bool,
-	highMmioGapSize uint64,
-	lockOnDisconnect api.OnOffState,
-	lowMmioGapSize uint32,
-	notes, smartPagingFilePath, snapshotFileLocation string,
-) {
-	sd.AutomaticStartupAction = enumToUint16(int(startAction))
-	sd.AutomaticShutdownAction = enumToUint16(int(stopAction))
-	sd.AutomaticCriticalErrorAction = enumToUint16(int(criticalErrorAction))
-	sd.LockOnDisconnect = lockOnDisconnect == api.OnOffState_On
-	sd.GuestControlledCacheTypes = guestControlledCacheTypes
+func applyVmLevelSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want vmLevelWant) error {
+	sd.AutomaticStartupAction = enumToUint16(int(want.startAction))
+	sd.AutomaticShutdownAction = enumToUint16(int(want.stopAction))
+	sd.AutomaticCriticalErrorAction = enumToUint16(int(want.criticalErrorAction))
+	sd.LockOnDisconnect = want.lockOnDisconnect == api.OnOffState_On
+	sd.GuestControlledCacheTypes = want.guestControlledCacheTypes
 	// HighMmioGapSize/LowMmioGapSize は CIM 上 MB 単位だが引数は api.Vm 由来の byte 単位
 	// (read 側 mbToBytesU64 の逆変換)。変換漏れのまま送信すると Hyper-V が
-	// ErrorCode=32773「無効な値」で CreateVm/UpdateVm を拒否する
-	// (#105、実機で新規VM作成が全滅する形で発覚、schema default値でも発火する)。
-	sd.HighMmioGapSize = bytesToMbU64(highMmioGapSize)
-	sd.LowMmioGapSize = bytesToMbU64(uint64(lowMmioGapSize))
-	if snapshotFileLocation != "" {
-		sd.SnapshotDataRoot = snapshotFileLocation
+	// ErrorCode=32773「無効な値」で CreateVm/UpdateVm を拒否する (#105)。
+	sd.HighMmioGapSize = bytesToMbU64(want.highMmioGapSize)
+	sd.LowMmioGapSize = bytesToMbU64(uint64(want.lowMmioGapSize))
+	if want.snapshotFileLocation != "" {
+		sd.SnapshotDataRoot = want.snapshotFileLocation
 	}
-	if smartPagingFilePath != "" {
-		sd.SwapFileDataRoot = smartPagingFilePath
+	if want.smartPagingFilePath != "" {
+		sd.SwapFileDataRoot = want.smartPagingFilePath
 	}
-	if notes != "" {
-		sd.Notes = strings.Split(notes, "\n")
+	if want.notes != "" {
+		sd.Notes = strings.Split(want.notes, "\n")
 	}
+	// checkpoint_type (#125)。ゼロ値は「未指定」なので送らない。
+	if want.checkpointType != 0 {
+		ust, err := userSnapshotTypeFromCheckpointType(want.checkpointType)
+		if err != nil {
+			return err
+		}
+		sd.UserSnapshotType = ust
+	}
+	// automatic_checkpoints_enabled。true は送れるが false はゼロ値のため落ちる。
+	// true→false は vmLevelZeroDowngrade が拾って PS へ委譲する。
+	sd.AutomaticSnapshotsEnabled = want.automaticCheckpointsEnabled
+	return nil
 }

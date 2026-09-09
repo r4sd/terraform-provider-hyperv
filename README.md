@@ -72,6 +72,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | 非ゼロ → 0 / false へのダウングレード | CIM はゼロ値を送れず黙殺されるため、意図的に委譲する |
 | `secure_boot_template` が未知の GUID / 名前 | 既知の対応表に無いもの |
 | `gpu_adapters` が非空 | 割り当ての CIM 実装が未着手 |
+| `automatic_checkpoints_enabled` を true → false | false は CIM で送れないため(`checkpoint_type` は CIM で変更できる) |
 | `hyperv_vhd` の `source` / `source_vm` 指定 | ファイルコピー / VM ディスクキャプチャは CIM の範囲外 |
 
 #### B. エラーで停止する(`HYPERV_USE_WSMAN` を外す必要がある)
@@ -84,7 +85,6 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | NIC の高度なオプション | QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング / PacketDirect |
 | ハードディスクの高度なオプション | QoS / パススルー / カスタムプール / キャッシュ属性 / 永続予約 |
 | DVD の空メディア(ISO 未指定) | |
-| チェックポイント種別の変更 | `checkpoint_type` / `automatic_checkpoints_enabled` の更新 |
 
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
 
@@ -98,6 +98,8 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 - Gen2 VM で、**OS を入れていない**こと(入れると firmware read が PowerShell に落ちる)
 - NIC がスイッチに接続されていないこと(go-wsman [#114](https://github.com/r4sd/go-wsman/issues/114) の既知バグ)
 - `wait_for_ips = false`
+- `automatic_checkpoints_enabled` がホストの既定と一致していること
+  (クライアント Hyper-V の既定は `true`。schema 既定の `false` にすると PowerShell へ委譲される)
 - プロセッサとファームウェアが既定値のまま
 
 つまり現時点では**使い捨ての検証用 VM でのみ成立する**。実運用の構成では PowerShell が動く。

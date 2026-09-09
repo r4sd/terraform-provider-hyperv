@@ -101,13 +101,17 @@ func TestVmFromSettingData(t *testing.T) {
 		AutomaticShutdownAction:      3, // Save
 		Notes:                        []string{"line1", "line2"},
 		LockOnDisconnect:             true,
-		GuestControlledCacheTypes:    true,
-		HighMmioGapSize:              512,
-		LowMmioGapSize:               128,
-		ConfigurationDataRoot:        `C:\vms\test`,
-		SnapshotDataRoot:             `C:\vms\snap`,
-		SwapFileDataRoot:             `C:\vms\swap`,
-		UserSnapshotType:             hyperv.UserSnapshotTypeProductionNoFallback,
+		// GuestControlledCacheTypes と AutomaticSnapshotsEnabled は値を **意図的に分ける**。
+		// 同値だと bool 同士の取り違え (AutomaticCheckpointsEnabled に
+		// GuestControlledCacheTypes を代入する等) をテストが区別できない。
+		GuestControlledCacheTypes: false,
+		HighMmioGapSize:           512,
+		LowMmioGapSize:            128,
+		ConfigurationDataRoot:     `C:\vms\test`,
+		SnapshotDataRoot:          `C:\vms\snap`,
+		SwapFileDataRoot:          `C:\vms\swap`,
+		UserSnapshotType:          hyperv.UserSnapshotTypeProductionNoFallback,
+		AutomaticSnapshotsEnabled: true,
 	}
 
 	got, err := vmFromSettingData("test-vm", sd)
@@ -133,11 +137,16 @@ func TestVmFromSettingData(t *testing.T) {
 	if got.Notes != "line1\nline2" {
 		t.Errorf("Notes = %q, want line1\\nline2", got.Notes)
 	}
+	// #134: 未マッピングで常に false を返していた。実機既定が true のため、
+	// これが抜けると「read は false / 実機は true」の恒常 diff になる。
+	if !got.AutomaticCheckpointsEnabled {
+		t.Error("AutomaticCheckpointsEnabled = false, want true (#134)")
+	}
 	if got.LockOnDisconnect != api.OnOffState_On {
 		t.Errorf("LockOnDisconnect = %v, want On", got.LockOnDisconnect)
 	}
-	if !got.GuestControlledCacheTypes {
-		t.Error("GuestControlledCacheTypes = false, want true")
+	if got.GuestControlledCacheTypes {
+		t.Error("GuestControlledCacheTypes = true, want false")
 	}
 	// HighMmioGapSize/LowMmioGapSize は CIM 上 MB、api.Vm は byte (実運用移行の実機検証で発見)。
 	if got.HighMemoryMappedIoSpace != 512*1024*1024 {
@@ -469,6 +478,9 @@ func TestVmSettingDataForCreate(t *testing.T) {
 		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
 		true, 512*1024*1024, api.OnOffState_On, 128*1024*1024,
 		"note1\nnote2", pagePath, snapPath,
+		// checkpointType は他の enum 引数と異なる値、automaticCheckpointsEnabled は
+		// guestControlledCacheTypes(true) と **異なる値** にして取り違えを検出可能にする。
+		api.CheckpointType_Production, false,
 	)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -512,9 +524,42 @@ func TestVmSettingDataForCreate(t *testing.T) {
 	if len(sd.Notes) != 2 || sd.Notes[0] != "note1" || sd.Notes[1] != "note2" {
 		t.Errorf("Notes=%v, want [note1 note2]", sd.Notes)
 	}
+	// #125: create 経路で checkpoint 系が配線されていること。
+	if sd.UserSnapshotType != 3 { // Production
+		t.Errorf("UserSnapshotType=%d, want 3 (Production)", sd.UserSnapshotType)
+	}
+	// guestControlledCacheTypes=true を渡しているので、取り違えていればここが true になる。
+	if sd.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled=true, want false (引数の取り違え?)")
+	}
 
-	if _, err := vmSettingDataForCreate("x", "", 9, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", ""); err == nil {
+	// 逆の組み合わせでも配線を確認する (bool 2 つの値を入れ替える)。
+	sd2, err := vmSettingDataForCreate(
+		"vm2", cfgPath, 2,
+		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
+		false, 512*1024*1024, api.OnOffState_On, 128*1024*1024,
+		"", pagePath, snapPath,
+		api.CheckpointType_Standard, true,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if sd2.UserSnapshotType != 5 { // Standard
+		t.Errorf("sd2.UserSnapshotType=%d, want 5 (Standard)", sd2.UserSnapshotType)
+	}
+	if !sd2.AutomaticSnapshotsEnabled {
+		t.Error("sd2.AutomaticSnapshotsEnabled=false, want true")
+	}
+	if sd2.GuestControlledCacheTypes {
+		t.Error("sd2.GuestControlledCacheTypes=true, want false (取り違え?)")
+	}
+
+	if _, err := vmSettingDataForCreate("x", "", 9, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", "", 0, false); err == nil {
 		t.Error("generation=9 はエラーになるべき")
+	}
+	// 範囲外の checkpoint_type は黙って通さない (#125)。
+	if _, err := vmSettingDataForCreate("x", "", 2, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", "", api.CheckpointType(99), false); err == nil {
+		t.Error("checkpoint_type=99 はエラーになるべき")
 	}
 }
 
@@ -538,10 +583,20 @@ func TestApplyVmLevelSettings(t *testing.T) {
 		VirtualSystemSubType: hyperv.VirtualSystemSubTypeGen2,
 		SnapshotDataRoot:     existingSnap,
 	}
-	applyVmLevelSettings(sd,
-		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
-		true, 256*1024*1024, api.OnOffState_On, 64*1024*1024,
-		"n1\nn2", `C:\new\paging`, "") // snapshot="" → 既存維持
+	if err := applyVmLevelSettings(sd, vmLevelWant{
+		criticalErrorAction:       api.CriticalErrorAction_Pause,
+		startAction:               api.StartAction_Start,
+		stopAction:                api.StopAction_Save,
+		guestControlledCacheTypes: true,
+		highMmioGapSize:           256 * 1024 * 1024,
+		lockOnDisconnect:          api.OnOffState_On,
+		lowMmioGapSize:            64 * 1024 * 1024,
+		notes:                     "n1\nn2",
+		smartPagingFilePath:       `C:\new\paging`,
+		snapshotFileLocation:      "", // 既存維持
+	}); err != nil {
+		t.Fatalf("applyVmLevelSettings: %v", err)
+	}
 
 	if sd.InstanceID != "keep-me" {
 		t.Errorf("InstanceID は保持されるべき: %q", sd.InstanceID)
@@ -570,41 +625,6 @@ func TestApplyVmLevelSettings(t *testing.T) {
 	}
 }
 
-// TestValidateCheckpointFieldsUnchanged は checkpointType/automaticCheckpointsEnabled の
-// 変更要求を UpdateVm が黙って無視せず検知することを検証する (#106 Fable 批判的レビュー指摘、
-// write 側が #46 まで未実装のため、変更要求は fail-loud にする必要がある)。
-func TestValidateCheckpointFieldsUnchanged(t *testing.T) {
-	cur := &hyperv.Msvm_VirtualSystemSettingData{
-		UserSnapshotType:          hyperv.UserSnapshotTypeProductionFallbackToTest, // Production(3)
-		AutomaticSnapshotsEnabled: false,
-	}
-
-	t.Run("変更なしなら nil", func(t *testing.T) {
-		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Production, false, cur); err != nil {
-			t.Errorf("変更なしのはずがエラー: %v", err)
-		}
-	})
-
-	t.Run("checkpoint_type の変更要求はエラー", func(t *testing.T) {
-		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Disabled, false, cur); err == nil {
-			t.Error("checkpoint_type 変更要求はエラーになるべき (WS-Man write未実装)")
-		}
-	})
-
-	t.Run("automatic_checkpoints_enabled の変更要求はエラー", func(t *testing.T) {
-		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Production, true, cur); err == nil {
-			t.Error("automatic_checkpoints_enabled 変更要求はエラーになるべき (WS-Man write未実装)")
-		}
-	})
-
-	t.Run("現在値が不正(UserSnapshotType未知)ならエラー", func(t *testing.T) {
-		bad := &hyperv.Msvm_VirtualSystemSettingData{UserSnapshotType: 0}
-		if err := validateCheckpointFieldsUnchanged(api.CheckpointType_Production, false, bad); err == nil {
-			t.Error("不正な現在値はエラーになるべき")
-		}
-	})
-}
-
 // TestVmLevelZeroDowngrade は VM レベル設定・メモリ設定の「非ゼロ→0 / true→false」検出を検証する。
 // これらは marshalEmbeddedInstance のゼロ値非送信により CIM で表現できず、PS 委譲が必要になる。
 //
@@ -626,6 +646,7 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 		Notes:                        []string{"memo"},
 		SwapFileDataRoot:             `C:\paging`,
 		SnapshotDataRoot:             `C:\snap`,
+		AutomaticSnapshotsEnabled:    true,
 	}
 	memDynamic := &hyperv.Msvm_MemorySettingData{DynamicMemoryEnabled: true}
 
@@ -659,23 +680,28 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 			smartPagingFilePath:       `C:\paging`,
 			snapshotFileLocation:      `C:\snap`,
 			staticMemory:              false,
+			// checkpoint 系。UserSnapshotType はゼロ値が無いのでダウングレード対象外。
+			checkpointType:              api.CheckpointType_Production,
+			automaticCheckpointsEnabled: true,
 		}
 	}
 
 	// 現行 B と一致する要求 (全てゼロ / false)。
 	wantMatchingZero := func() vmLevelWant {
 		return vmLevelWant{
-			criticalErrorAction:       api.CriticalErrorAction_None,
-			startAction:               api.StartAction_Nothing,
-			stopAction:                api.StopAction_TurnOff,
-			guestControlledCacheTypes: false,
-			highMmioGapSize:           0,
-			lockOnDisconnect:          api.OnOffState_Off,
-			lowMmioGapSize:            0,
-			notes:                     "",
-			smartPagingFilePath:       "",
-			snapshotFileLocation:      "",
-			staticMemory:              true,
+			criticalErrorAction:         api.CriticalErrorAction_None,
+			startAction:                 api.StartAction_Nothing,
+			stopAction:                  api.StopAction_TurnOff,
+			guestControlledCacheTypes:   false,
+			highMmioGapSize:             0,
+			lockOnDisconnect:            api.OnOffState_Off,
+			lowMmioGapSize:              0,
+			notes:                       "",
+			smartPagingFilePath:         "",
+			snapshotFileLocation:        "",
+			staticMemory:                true,
+			checkpointType:              api.CheckpointType_Production,
+			automaticCheckpointsEnabled: false,
 		}
 	}
 
@@ -696,6 +722,9 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 		{"A: highMmioGapSize 非ゼロ→0", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.highMmioGapSize = 0 }, true},
 		{"A: lowMmioGapSize 非ゼロ→0", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.lowMmioGapSize = 0 }, true},
 		{"A: dynamic→static", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.staticMemory = true }, true},
+		{"A: automaticCheckpointsEnabled true→false", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = false }, true},
+		// checkpoint_type は有効値 2..5 でゼロ値が無いため、どの値へ変えても送信できる。
+		{"A: checkpointType 変更はダウングレードでない", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.checkpointType = api.CheckpointType_Standard }, false},
 		// パス系の空は「消す」ではなく「指定なし」(#99 と同じ意味論)。委譲しない。
 		{"A: smartPagingFilePath 空 = 指定なし", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.smartPagingFilePath = "" }, false},
 		{"A: snapshotFileLocation 空 = 指定なし", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.snapshotFileLocation = "" }, false},
@@ -713,6 +742,8 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 		{"B: MMIO 0 のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.highMmioGapSize, w.lowMmioGapSize = 0, 0 }, false},
 		{"B: 既に static のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.staticMemory = true }, false},
 		// 現行ゼロから上げる方向は当然委譲不要
+		{"B: automaticCheckpointsEnabled false のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = false }, false},
+		{"B: automaticCheckpointsEnabled false→true", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = true }, false},
 		{"B: notes 空→非空", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.notes = "new" }, false},
 		{"B: lockOnDisconnect Off→On", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_On }, false},
 	}
@@ -725,5 +756,89 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 				t.Errorf("vmLevelZeroDowngrade = %v, want %v", got, tc.down)
 			}
 		})
+	}
+}
+
+// TestUserSnapshotTypeFromCheckpointType は api.CheckpointType → CIM UserSnapshotType の
+// 変換を検証する。両者は #106 で MOF 突合済みの数値一致だが、範囲外を黙って通すと
+// Hyper-V 側で不定の挙動になるため検証を挟む。
+func TestUserSnapshotTypeFromCheckpointType(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      api.CheckpointType
+		want    uint16
+		wantErr bool
+	}{
+		{"Disabled", api.CheckpointType_Disabled, 2, false},
+		{"Production", api.CheckpointType_Production, 3, false},
+		{"ProductionOnly", api.CheckpointType_ProductionOnly, 4, false},
+		{"Standard", api.CheckpointType_Standard, 5, false},
+		{"ゼロ値は無効 (未設定と区別できない)", api.CheckpointType(0), 0, true},
+		{"範囲外 1", api.CheckpointType(1), 0, true},
+		{"範囲外 6", api.CheckpointType(6), 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := userSnapshotTypeFromCheckpointType(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Errorf("= %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyVmLevelSettingsWritesCheckpointFields は applyVmLevelSettings が
+// checkpoint 系フィールドを実際に SettingData へ書くことを検証する (#125)。
+//
+// UserSnapshotType は有効値が 2..5 でゼロ値が無いため、marshalEmbeddedInstance の
+// ゼロ値スキップに掛からず常に送信される (実機確認済み)。
+func TestApplyVmLevelSettingsWritesCheckpointFields(t *testing.T) {
+	sd := &hyperv.Msvm_VirtualSystemSettingData{}
+	if err := applyVmLevelSettings(sd, vmLevelWant{
+		criticalErrorAction:         api.CriticalErrorAction_Pause,
+		startAction:                 api.StartAction_Nothing,
+		stopAction:                  api.StopAction_TurnOff,
+		checkpointType:              api.CheckpointType_Production,
+		automaticCheckpointsEnabled: true,
+	}); err != nil {
+		t.Fatalf("applyVmLevelSettings: %v", err)
+	}
+	if sd.UserSnapshotType != 3 {
+		t.Errorf("UserSnapshotType = %d, want 3 (Production)", sd.UserSnapshotType)
+	}
+	if !sd.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled = false, want true")
+	}
+
+	// 未指定 (ゼロ値) の CheckpointType は書かない。既存 VM の設定を壊さないため。
+	// あわせて automaticCheckpointsEnabled=false が定数 true で潰されていないことも見る。
+	sd2 := &hyperv.Msvm_VirtualSystemSettingData{}
+	if err := applyVmLevelSettings(sd2, vmLevelWant{checkpointType: api.CheckpointType(0)}); err != nil {
+		t.Fatalf("applyVmLevelSettings: %v", err)
+	}
+	if sd2.UserSnapshotType != 0 {
+		t.Errorf("未指定時の UserSnapshotType = %d, want 0 (送らない)", sd2.UserSnapshotType)
+	}
+	if sd2.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled = true, want false (定数で潰されていないか)")
+	}
+
+	// bool 2 つが互いに独立して配線されていること
+	// (guestControlledCacheTypes と automaticCheckpointsEnabled の混線検出)。
+	sd3 := &hyperv.Msvm_VirtualSystemSettingData{}
+	if err := applyVmLevelSettings(sd3, vmLevelWant{
+		guestControlledCacheTypes:   false,
+		automaticCheckpointsEnabled: true,
+	}); err != nil {
+		t.Fatalf("applyVmLevelSettings: %v", err)
+	}
+	if sd3.GuestControlledCacheTypes {
+		t.Error("GuestControlledCacheTypes = true, want false (混線?)")
+	}
+	if !sd3.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled = false, want true")
 	}
 }

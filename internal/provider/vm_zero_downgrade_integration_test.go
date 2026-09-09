@@ -47,10 +47,7 @@ func TestRealHostVmLevelZeroDowngrade(t *testing.T) {
 		api.CriticalErrorAction_Pause, 30,
 		api.StartAction_Nothing, 0,
 		api.StopAction_Save,
-		// #125 のため CheckpointType は実機既定 (Standard) を渡す。Production を渡すと
-		// CreateVm が黙って未適用にし、後続の UpdateVm が validateCheckpointFieldsUnchanged で
-		// 弾かれて本題(ゼロ値ダウングレード)まで到達できない。
-		api.CheckpointType_Standard,
+		api.CheckpointType_Production,
 		false, false, 0,
 		api.OnOffState_Off, 0,
 		memByt, memByt, memByt,
@@ -82,7 +79,7 @@ func TestRealHostVmLevelZeroDowngrade(t *testing.T) {
 		api.CriticalErrorAction_Pause, 30,
 		api.StartAction_Nothing, 0,
 		api.StopAction_Save,
-		api.CheckpointType_Standard,
+		api.CheckpointType_Production,
 		false, false, 0,
 		api.OnOffState_Off, 0,
 		memByt, memByt, memByt,

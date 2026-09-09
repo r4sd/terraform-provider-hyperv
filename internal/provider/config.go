@@ -260,6 +260,8 @@ func getHypervProvider(config *Config) (hypervProvider *api.Provider, err error)
 		// PS-0 が成立する条件と、PS へ委譲/エラーになる経路の一覧は README の
 		// 「PowerShell 非依存化(移行中)」に集約している。現況スナップショットをここに
 		// 書くと実装より先に陳腐化するため、この位置には置かない (#126)。
+		// README 側の既知の不一致 (hyperv_vhd の削除経路が PS のまま・黙って捨てられて
+		// 恒常 diff になる経路が表に無い) は #136 で追跡している。
 		if strictNoPSEnabled() {
 			log.Printf("[WARN][hyperv] HYPERV_WSMAN_STRICT enabled. PowerShell フォールバックは全て fail-fast エラーになります。")
 			winrmConfig.WinRmClient = &hyperv_wsman.StrictNoPSClient{}

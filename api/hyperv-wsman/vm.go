@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"regexp"
 	"strconv"
@@ -513,6 +514,7 @@ func (c *ClientConfig) UpdateVm(
 		snapshotFileLocation:      snapshotFileLocation,
 		staticMemory:              staticMemory,
 	}) {
+		log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
 		return c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
 			automaticStartAction, automaticStartDelay, automaticStopAction,
@@ -667,7 +669,8 @@ type vmLevelWant struct {
 // 空文字を明示的にスキップするため、値の消去も同じく反映されない。
 func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyperv.Msvm_MemorySettingData, want vmLevelWant) bool {
 	if cur == nil {
-		return false
+		// 現行が読めない場合は判定できないので安全側 (PS 委譲) に倒す。
+		return true
 	}
 	zeroEnum := func(w int, c uint16) bool { return enumToUint16(w) == 0 && c != 0 }
 	if zeroEnum(int(want.criticalErrorAction), cur.AutomaticCriticalErrorAction) ||

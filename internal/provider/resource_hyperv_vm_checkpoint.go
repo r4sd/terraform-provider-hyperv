@@ -29,6 +29,12 @@ func resourceHyperVVmCheckpoint() *schema.Resource {
 		CreateContext: resourceHyperVVmCheckpointCreate,
 		ReadContext:   resourceHyperVVmCheckpointRead,
 		DeleteContext: resourceHyperVVmCheckpointDelete,
+		// ID は "<vm_name>/<checkpoint_name>" で Read が両方を復元できるため passthrough で足りる。
+		// 実機にはあるが state に無い状態 (作成が途中で失敗した後など) から復帰する出口が
+		// 無いと、Create が「既に存在する」で拒否して手詰まりになる。
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 		Schema: map[string]*schema.Schema{
 			"vm_name": {
 				Type:        schema.TypeString,

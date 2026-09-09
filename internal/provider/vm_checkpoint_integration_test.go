@@ -110,11 +110,44 @@ func TestRealHostVmCheckpointWsman(t *testing.T) {
 	}
 	t.Logf("④ 同名の再作成を拒否")
 
-	// --- 5. 復元 ---
+	// --- 5. 復元 (停止中) ---
 	if err := cc.RestoreVmCheckpoint(ctx, vmName, cpName); err != nil {
 		t.Fatalf("RestoreVmCheckpoint: %v", err)
 	}
-	t.Logf("⑤ 復元 OK")
+	t.Logf("⑤ 停止中 VM の復元 OK")
+
+	// --- 5b. 稼働中 VM でも復元できるか ---
+	//
+	// restore_on_destroy はカオスエンジニアリング用途で、対象は稼働中 VM が前提。
+	// ApplySnapshot の一次資料は Invalid State (32775) を戻り値に列挙しているが
+	// 状態要件を明記していないため実機に問う (批判的レビュー指摘)。
+	// OS 未インストールなのでブートは失敗するが VM の状態は Running になる。
+	cs, err := cc.WsmanClient.FindComputerSystemByElementName(ctx, vmName)
+	if err != nil {
+		t.Fatalf("FindComputerSystemByElementName: %v", err)
+	}
+	if jr, err := cc.WsmanClient.StartVM(ctx, cs.Name); err != nil {
+		t.Logf("⚠️ StartVM 不可のため稼働中復元の検証はスキップ: %v", err)
+	} else {
+		if err := cc.WsmanClient.WaitForJob(ctx, jr); err != nil {
+			t.Fatalf("WaitForJob(StartVM): %v", err)
+		}
+		running, err := cc.WsmanClient.FindComputerSystemByElementName(ctx, vmName)
+		if err != nil {
+			t.Fatalf("Find (running): %v", err)
+		}
+		t.Logf("⑤b VM 状態 EnabledState=%d (2=Running)", running.EnabledState)
+
+		if err := cc.RestoreVmCheckpoint(ctx, vmName, cpName); err != nil {
+			t.Fatalf("🔴 稼働中 VM の復元が失敗する。restore_on_destroy が実運用で使えない: %v", err)
+		}
+		t.Logf("🎯 稼働中 VM でも復元できる (restore_on_destroy が実用になる)")
+
+		// 後片付け: 停止に戻す。
+		if jr, err := cc.WsmanClient.TurnOffVM(ctx, cs.Name); err == nil {
+			_ = cc.WsmanClient.WaitForJob(ctx, jr)
+		}
+	}
 
 	// --- 6. 削除 → 不在になること ---
 	if err := cc.DeleteVmCheckpoint(ctx, vmName, cpName2); err != nil {

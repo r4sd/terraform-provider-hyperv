@@ -203,8 +203,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/posener/complete v1.2.3 h1:NP0eAhjcjImqslEwo/1hq7gpajME0fTLTezBKDqfXqo=
 github.com/posener/complete v1.2.3/go.mod h1:WZIdtGGp+qx0sLrYKtIRAruyNpv6hFCicSgv7Sy7s/s=
-github.com/r4sd/go-wsman v0.0.0-20260909163203-d818beb84196 h1:QGtZobYFFBi4GnbC4ZUdtrBDw4sPpBVy6svKF/11SYY=
-github.com/r4sd/go-wsman v0.0.0-20260909163203-d818beb84196/go.mod h1:mrybGztZOOwNEiXgAHi2GuqTKycV+W7xSD2VZTA1eeI=
+github.com/r4sd/go-wsman v0.0.0-20260909172104-22dfd43176c0 h1:ESp7L88orwiRwelKlavQiTTjfw164jNQOCaTxdY+TJc=
+github.com/r4sd/go-wsman v0.0.0-20260909172104-22dfd43176c0/go.mod h1:mrybGztZOOwNEiXgAHi2GuqTKycV+W7xSD2VZTA1eeI=
 github.com/rogpeppe/go-internal v1.12.0 h1:exVL4IDcn6na9z1rAb56Vxr+CgyK3nn3O+epU5NdKM8=
 github.com/rogpeppe/go-internal v1.12.0/go.mod h1:E+RYuTGaKKdloAfM02xzb0FW3Paa99yedzYV+kq4uf4=
 github.com/russross/blackfriday v1.6.0 h1:KqfZb0pUVN2lYqZUYRddxF4OR8ZMURnJIG5Y3VRLtww=

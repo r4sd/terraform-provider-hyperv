@@ -200,7 +200,7 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		SnapshotFileLocation:    sd.SnapshotDataRoot,
 		SmartPagingFilePath:     sd.SwapFileDataRoot,
 		// UserSnapshotType(CIM) は Microsoft.HyperV.PowerShell.CheckpointType と数値が
-		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write 側は #46 に延期。
+		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write は #125 で実装済み。
 		CheckpointType: checkpointType,
 		// #134: 未マッピングだったため read が常に false を返していた。
 		AutomaticCheckpointsEnabled: sd.AutomaticSnapshotsEnabled,
@@ -211,9 +211,8 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		//     Msvm_MemorySettingData / Msvm_ProcessorSettingData を別途取得して合成、
 		//     AutomaticCriticalErrorActionTimeout は sd.AutomaticCriticalErrorActionTimeout
 		//     (CIM datetime/interval 文字列) を parseIntervalMinutes で分に変換する。
-		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要だが go-wsman の
-		//     CIM 構造体に未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
-		//   - AutomaticCheckpointsEnabled: v2.1 (#46) に延期。
+		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要 (#133 で追跡。
+		//     go-wsman types.go には AutomaticStartupActionDelay が既に存在する)。
 	}, nil
 }
 
@@ -222,9 +221,12 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 // エラーを返す。ここを黙って通すと api.CheckpointType.String() が空文字列を返し、#106 の
 // 恒常 drift (schema Default との不一致で毎 plan diff → apply 毎に VM 強制シャットダウン) が
 // 無音で再発するため fail-loud にする (Fable 批判的レビュー指摘)。
-// userSnapshotTypeFromCheckpointType は api.CheckpointType を CIM の UserSnapshotType へ変換する。
-// 両者は #106 で MOF 突合済みの数値一致 (2..5)。範囲外は Hyper-V 側で不定の挙動になるため弾く。
-// ゼロ値は「未指定」を意味し、呼び出し側が送信をスキップする。
+// checkpointTypeFromUserSnapshotType / userSnapshotTypeFromCheckpointType は
+// CIM の UserSnapshotType と api.CheckpointType を相互変換する。両者は #106 で MOF 突合済みの
+// 数値一致 (2..5)。既知の値以外は黙って通さず fail-loud にする。
+//
+// userSnapshotTypeFromCheckpointType は書き込み方向。ゼロ値は「未指定」を意味し、
+// 呼び出し側が送信をスキップする。
 func userSnapshotTypeFromCheckpointType(ct api.CheckpointType) (uint16, error) {
 	if _, ok := api.CheckpointType_name[ct]; !ok {
 		return 0, fmt.Errorf("未知の checkpoint_type 値 %d (既知範囲は 2-5)", ct)
@@ -645,8 +647,10 @@ func vmSettingDataForCreate(
 	return sd, nil
 }
 
-// vmLevelWant は UpdateVm が要求する VM レベル設定 + メモリ方式をまとめたもの。
-// ゼロ値ダウングレード判定 (vmLevelZeroDowngrade) の引数を短く保つために使う。
+// vmLevelWant は Create/Update が要求する VM レベル設定 + メモリ方式をまとめたもの。
+// applyVmLevelSettings の入力と vmLevelZeroDowngrade の判定材料を兼ねる。
+// 同型の引数 (bool 複数・string 複数) が位置指定で並ぶと取り違えてもコンパイルが通るため、
+// 構造体で受け渡す。
 type vmLevelWant struct {
 	criticalErrorAction       api.CriticalErrorAction
 	startAction               api.StartAction

@@ -101,14 +101,17 @@ func TestVmFromSettingData(t *testing.T) {
 		AutomaticShutdownAction:      3, // Save
 		Notes:                        []string{"line1", "line2"},
 		LockOnDisconnect:             true,
-		GuestControlledCacheTypes:    true,
-		HighMmioGapSize:              512,
-		LowMmioGapSize:               128,
-		ConfigurationDataRoot:        `C:\vms\test`,
-		SnapshotDataRoot:             `C:\vms\snap`,
-		SwapFileDataRoot:             `C:\vms\swap`,
-		UserSnapshotType:             hyperv.UserSnapshotTypeProductionNoFallback,
-		AutomaticSnapshotsEnabled:    true,
+		// GuestControlledCacheTypes と AutomaticSnapshotsEnabled は値を **意図的に分ける**。
+		// 同値だと bool 同士の取り違え (AutomaticCheckpointsEnabled に
+		// GuestControlledCacheTypes を代入する等) をテストが区別できない。
+		GuestControlledCacheTypes: false,
+		HighMmioGapSize:           512,
+		LowMmioGapSize:            128,
+		ConfigurationDataRoot:     `C:\vms\test`,
+		SnapshotDataRoot:          `C:\vms\snap`,
+		SwapFileDataRoot:          `C:\vms\swap`,
+		UserSnapshotType:          hyperv.UserSnapshotTypeProductionNoFallback,
+		AutomaticSnapshotsEnabled: true,
 	}
 
 	got, err := vmFromSettingData("test-vm", sd)
@@ -142,8 +145,8 @@ func TestVmFromSettingData(t *testing.T) {
 	if got.LockOnDisconnect != api.OnOffState_On {
 		t.Errorf("LockOnDisconnect = %v, want On", got.LockOnDisconnect)
 	}
-	if !got.GuestControlledCacheTypes {
-		t.Error("GuestControlledCacheTypes = false, want true")
+	if got.GuestControlledCacheTypes {
+		t.Error("GuestControlledCacheTypes = true, want false")
 	}
 	// HighMmioGapSize/LowMmioGapSize は CIM 上 MB、api.Vm は byte (実運用移行の実機検証で発見)。
 	if got.HighMemoryMappedIoSpace != 512*1024*1024 {
@@ -475,6 +478,8 @@ func TestVmSettingDataForCreate(t *testing.T) {
 		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
 		true, 512*1024*1024, api.OnOffState_On, 128*1024*1024,
 		"note1\nnote2", pagePath, snapPath,
+		// checkpointType は他の enum 引数と異なる値、automaticCheckpointsEnabled は
+		// guestControlledCacheTypes(true) と **異なる値** にして取り違えを検出可能にする。
 		api.CheckpointType_Production, false,
 	)
 	if err != nil {
@@ -518,6 +523,35 @@ func TestVmSettingDataForCreate(t *testing.T) {
 	}
 	if len(sd.Notes) != 2 || sd.Notes[0] != "note1" || sd.Notes[1] != "note2" {
 		t.Errorf("Notes=%v, want [note1 note2]", sd.Notes)
+	}
+	// #125: create 経路で checkpoint 系が配線されていること。
+	if sd.UserSnapshotType != 3 { // Production
+		t.Errorf("UserSnapshotType=%d, want 3 (Production)", sd.UserSnapshotType)
+	}
+	// guestControlledCacheTypes=true を渡しているので、取り違えていればここが true になる。
+	if sd.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled=true, want false (引数の取り違え?)")
+	}
+
+	// 逆の組み合わせでも配線を確認する (bool 2 つの値を入れ替える)。
+	sd2, err := vmSettingDataForCreate(
+		"vm2", cfgPath, 2,
+		api.CriticalErrorAction_Pause, api.StartAction_Start, api.StopAction_Save,
+		false, 512*1024*1024, api.OnOffState_On, 128*1024*1024,
+		"", pagePath, snapPath,
+		api.CheckpointType_Standard, true,
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if sd2.UserSnapshotType != 5 { // Standard
+		t.Errorf("sd2.UserSnapshotType=%d, want 5 (Standard)", sd2.UserSnapshotType)
+	}
+	if !sd2.AutomaticSnapshotsEnabled {
+		t.Error("sd2.AutomaticSnapshotsEnabled=false, want true")
+	}
+	if sd2.GuestControlledCacheTypes {
+		t.Error("sd2.GuestControlledCacheTypes=true, want false (取り違え?)")
 	}
 
 	if _, err := vmSettingDataForCreate("x", "", 9, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", "", 0, false); err == nil {
@@ -780,11 +814,31 @@ func TestApplyVmLevelSettingsWritesCheckpointFields(t *testing.T) {
 	}
 
 	// 未指定 (ゼロ値) の CheckpointType は書かない。既存 VM の設定を壊さないため。
+	// あわせて automaticCheckpointsEnabled=false が定数 true で潰されていないことも見る。
 	sd2 := &hyperv.Msvm_VirtualSystemSettingData{}
 	if err := applyVmLevelSettings(sd2, vmLevelWant{checkpointType: api.CheckpointType(0)}); err != nil {
 		t.Fatalf("applyVmLevelSettings: %v", err)
 	}
 	if sd2.UserSnapshotType != 0 {
 		t.Errorf("未指定時の UserSnapshotType = %d, want 0 (送らない)", sd2.UserSnapshotType)
+	}
+	if sd2.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled = true, want false (定数で潰されていないか)")
+	}
+
+	// bool 2 つが互いに独立して配線されていること
+	// (guestControlledCacheTypes と automaticCheckpointsEnabled の混線検出)。
+	sd3 := &hyperv.Msvm_VirtualSystemSettingData{}
+	if err := applyVmLevelSettings(sd3, vmLevelWant{
+		guestControlledCacheTypes:   false,
+		automaticCheckpointsEnabled: true,
+	}); err != nil {
+		t.Fatalf("applyVmLevelSettings: %v", err)
+	}
+	if sd3.GuestControlledCacheTypes {
+		t.Error("GuestControlledCacheTypes = true, want false (混線?)")
+	}
+	if !sd3.AutomaticSnapshotsEnabled {
+		t.Error("AutomaticSnapshotsEnabled = false, want true")
 	}
 }

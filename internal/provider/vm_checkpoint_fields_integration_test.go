@@ -67,12 +67,15 @@ func TestRealHostCheckpointFields(t *testing.T) {
 	}
 	t.Logf("🎯 checkpoint_type が create で反映される (#125)")
 
-	// #134: read が実値を返すこと。false を送れないためホスト既定の true が残っており、
-	// read が正直なら true になる。修正前は常に false を返していた。
+	// #134: read が実値を返すこと。false は CIM で送れないため、ホスト既定がそのまま残る。
+	//
+	// AutomaticCheckpointsEnabled のホスト既定はクライアント Hyper-V (Windows 10/11) で true、
+	// Windows Server では false。true のホストでのみ「false へのダウングレード」を検証できるので、
+	// ここで分岐する。false のホストで Fatal にすると偽陽性になる。
 	if !created.AutomaticCheckpointsEnabled {
-		t.Fatalf("🔴 判定: read が実値を返していない。ホスト既定は true のはず (#134)")
+		t.Skip("ホスト既定が false (Windows Server 等) のため、false ダウングレードの検証は不可")
 	}
-	t.Logf("🎯 read が AutomaticCheckpointsEnabled の実値を返す (#134)")
+	t.Logf("🎯 read が AutomaticCheckpointsEnabled の実値 (true) を返す (#134)")
 
 	// --- 2. automatic_checkpoints_enabled=false へ更新する ---
 	// false はゼロ値で CIM 送信できないため、ゼロ値ダウングレードとして PS へ委譲される。

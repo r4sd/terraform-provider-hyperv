@@ -7,10 +7,15 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
+
+// rollbackTimeout は作成失敗時の巻き戻しに与える時間。元の ctx が失効していても
+// 巻き戻せるよう独立した期限を持たせる。
+const rollbackTimeout = time.Minute
 
 // vmCheckpointLocks は VM 単位の作成ロック。
 //
@@ -24,7 +29,9 @@ import (
 var vmCheckpointLocks sync.Map
 
 func lockVmCheckpoint(vmName string) func() {
-	v, _ := vmCheckpointLocks.LoadOrStore(vmName, &sync.Mutex{})
+	// VM 解決は EqualFold なので "VM1" と "vm1" は同じ VM を指す。
+	// キーをそのまま使うと別ロックになり同一 VM で並列作成が起きる。
+	v, _ := vmCheckpointLocks.LoadOrStore(strings.ToLower(vmName), &sync.Mutex{})
 	mu := v.(*sync.Mutex)
 	mu.Lock()
 	return mu.Unlock
@@ -155,10 +162,27 @@ func (c *ClientConfig) CreateVmCheckpoint(ctx context.Context, vmName string, ch
 	// PS 版 (Checkpoint-VM -SnapshotName) は原子的なので、放置するとパリティが崩れ、
 	// 再 apply のたびに既定名のチェックポイントが 1 個ずつ増える。
 	fail := func(format string, args ...interface{}) error {
-		if jr, e := c.WsmanClient.DestroyVmCheckpoint(ctx, instanceID); e == nil {
-			_ = c.WsmanClient.WaitForJob(ctx, jr)
+		orig := fmt.Errorf(format, args...)
+		// 巻き戻しは **元の ctx から切り離す**。ここに来る最も現実的な理由は
+		// terraform の Create タイムアウトによる ctx 失効で、同じ ctx を使うと
+		// 巻き戻しが必ず即失敗し、既定名のチェックポイントが残ったまま
+		// 利用者がそれに気付けない。
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+
+		rollbackErr := func() error {
+			jr, err := c.WsmanClient.DestroyVmCheckpoint(rctx, instanceID)
+			if err != nil {
+				return err
+			}
+			return c.WsmanClient.WaitForJob(rctx, jr)
+		}()
+		if rollbackErr != nil {
+			// 黙って隠さない。残骸の InstanceID を出して手で消せるようにする。
+			return fmt.Errorf("%w (巻き戻しも失敗: %v。作成済みチェックポイント InstanceID=%s が実機に残っている)",
+				orig, rollbackErr, instanceID)
 		}
-		return fmt.Errorf(format, args...)
+		return orig
 	}
 
 	jobRef, err := c.WsmanClient.RenameVmCheckpoint(ctx, instanceID, checkpointName)

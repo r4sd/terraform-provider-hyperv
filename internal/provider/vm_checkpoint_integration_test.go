@@ -177,3 +177,91 @@ func TestRealHostVmCheckpointWsman(t *testing.T) {
 	}
 	t.Logf("🎯 判定: vm_checkpoint の CIM 経路が CRUD 一巡で動作する")
 }
+
+// TestRealHostCheckpointStandardRestoreKeepsRunning は「Standard チェックポイントを
+// 稼働中 VM に復元すると稼働状態が維持される」ことを固定する。
+//
+// これが CIM 経路と PS 経路のパリティの核心。CIM の ApplySnapshot は種別に関係なく
+// 稼働中 VM を拒否する (32775) ため PS へ委譲しているが、もし将来「CIM 側で停止を
+// 挟んで擬似的に実現する」実装に戻すと、**維持されるはずの稼働状態を黙って壊す**。
+// 一次資料にこの挙動の記載は無く、実機観測だけが根拠なのでテストで固定する。
+func TestRealHostCheckpointStandardRestoreKeepsRunning(t *testing.T) {
+	if os.Getenv("HYPERV_TEST_ALLOW_MUTATION") == "" {
+		t.Skip("HYPERV_TEST_ALLOW_MUTATION 未設定（VM 作成を伴う破壊的テスト）")
+	}
+	c := realHostConfigFromEnv(t)
+	cc := newRealHostWsmanClientConfig(t, c)
+	ctx := context.Background()
+
+	const (
+		vmName    = "tf-wsman-ckpt-std"
+		cpName    = "std-running"
+		memByt    = 536870912
+		defaultVM = `C:\ProgramData\Microsoft\Windows\Hyper-V`
+	)
+	_ = cc.DeleteVm(ctx, vmName)
+	t.Cleanup(func() {
+		_ = cc.DeleteVmCheckpoint(ctx, vmName, cpName)
+		if err := cc.DeleteVm(ctx, vmName); err != nil {
+			t.Logf("cleanup DeleteVm: %v", err)
+		}
+	})
+
+	// Standard (メモリ込み) のチェックポイントを取る VM。
+	if err := cc.CreateVm(ctx, vmName,
+		"", 1,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Standard,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		"std-restore", 1,
+		defaultVM, defaultVM, true, true,
+	); err != nil {
+		t.Fatalf("CreateVm: %v", err)
+	}
+
+	cs, err := cc.WsmanClient.FindComputerSystemByElementName(ctx, vmName)
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if jr, err := cc.WsmanClient.StartVM(ctx, cs.Name); err != nil {
+		t.Skipf("StartVM 不可のためスキップ: %v", err)
+	} else if err := cc.WsmanClient.WaitForJob(ctx, jr); err != nil {
+		t.Fatalf("WaitForJob(Start): %v", err)
+	}
+
+	// 稼働中にチェックポイントを取る。
+	if err := cc.CreateVmCheckpoint(ctx, vmName, cpName); err != nil {
+		t.Fatalf("CreateVmCheckpoint: %v", err)
+	}
+	got, err := cc.GetVmCheckpoint(ctx, vmName, cpName)
+	if err != nil {
+		t.Fatalf("GetVmCheckpoint: %v", err)
+	}
+	t.Logf("① 取得したチェックポイント: Type=%q", got.CheckpointType)
+	if got.CheckpointType != "Standard" {
+		t.Skipf("Standard で取れなかったため判定不能 (got %q)", got.CheckpointType)
+	}
+
+	// 稼働中のまま復元する。
+	if err := cc.RestoreVmCheckpoint(ctx, vmName, cpName); err != nil {
+		t.Fatalf("RestoreVmCheckpoint: %v", err)
+	}
+	after, err := cc.WsmanClient.FindComputerSystemByElementName(ctx, vmName)
+	if err != nil {
+		t.Fatalf("Find (after): %v", err)
+	}
+	t.Logf("② 復元後の EnabledState=%d (2=Running)", after.EnabledState)
+	if after.EnabledState != hyperv.EnabledStateEnabled {
+		t.Fatalf("🔴 Standard チェックポイントの復元で稼働状態が維持されていない (got %d)。"+
+			"CIM 側で停止を挟む実装に戻っていないか", after.EnabledState)
+	}
+	t.Logf("🎯 判定: Standard チェックポイントの復元で稼働状態が維持される")
+
+	if jr, err := cc.WsmanClient.TurnOffVM(ctx, cs.Name); err == nil {
+		_ = cc.WsmanClient.WaitForJob(ctx, jr)
+	}
+}

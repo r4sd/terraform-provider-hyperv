@@ -227,11 +227,23 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 //
 // userSnapshotTypeFromCheckpointType は書き込み方向。ゼロ値は「未指定」を意味し、
 // 呼び出し側が送信をスキップする。
+//
+// api.CheckpointType は int (アーキ依存幅) なので uint16 へキャストせず、既知の値ごとに
+// go-wsman の定数を返す。範囲検証を挟んでも静的解析はキャストの安全性を追えず、
+// CodeQL の go/incorrect-integer-conversion に引っかかる。
 func userSnapshotTypeFromCheckpointType(ct api.CheckpointType) (uint16, error) {
-	if _, ok := api.CheckpointType_name[ct]; !ok {
+	switch ct {
+	case api.CheckpointType_Disabled:
+		return hyperv.UserSnapshotTypeDisable, nil
+	case api.CheckpointType_Production:
+		return hyperv.UserSnapshotTypeProductionFallbackToTest, nil
+	case api.CheckpointType_ProductionOnly:
+		return hyperv.UserSnapshotTypeProductionNoFallback, nil
+	case api.CheckpointType_Standard:
+		return hyperv.UserSnapshotTypeTest, nil
+	default:
 		return 0, fmt.Errorf("未知の checkpoint_type 値 %d (既知範囲は 2-5)", ct)
 	}
-	return uint16(ct), nil
 }
 
 func checkpointTypeFromUserSnapshotType(v uint16) (api.CheckpointType, error) {

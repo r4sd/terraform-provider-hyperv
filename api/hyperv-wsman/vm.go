@@ -519,12 +519,6 @@ func (c *ClientConfig) UpdateVm(
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
 	}
 	if vmLevelZeroDowngrade(cur, mem, want) {
-		// 委譲先が無い構成 (テストハーネス等) で nil 参照 panic にしない。
-		// provider は plugin プロセスなので panic は Terraform ごと落ちる。
-		if c.ClientConfig == nil {
-			return fmt.Errorf("hyperv-wsman: UpdateVm %q: ゼロ値ダウングレード (0 / false への変更) は "+
-				"CIM で表現できず PowerShell 経路が要るが、委譲先の WinRM クライアントが構成されていない", name)
-		}
 		log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
 		return c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,

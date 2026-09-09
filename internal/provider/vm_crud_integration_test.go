@@ -35,6 +35,12 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 	ctx := context.Background()
 
 	const (
+		// MMIO は schema 既定 (512MiB / 128MiB) を使う。0 を渡すと CIM は既定値解決に
+		// 任せる = ホスト側は非ゼロになり、次の Update で 0 を要求するとゼロ値
+		// ダウングレード扱いになって PS へ委譲されてしまう。resource 層の既定も非ゼロ。
+		defaultHighMmio = 536870912
+		defaultLowMmio  = 134217728
+
 		name   = "tf-wsman-crud-test"
 		memByt = 536870912 // 512 MiB (起動時メモリ)
 	)
@@ -60,9 +66,9 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 		api.CheckpointType_Production, // checkpointType (未適用)
 		false,                         // dynamicMemory
 		false,                         // guestControlledCacheTypes
-		0,                             // highMemoryMappedIoSpace
+		defaultHighMmio,               // highMemoryMappedIoSpace (schema 既定)
 		api.OnOffState_Off,            // lockOnDisconnect
-		0,                             // lowMemoryMappedIoSpace
+		defaultLowMmio,                // lowMemoryMappedIoSpace (schema 既定)
 		memByt,                        // memoryMaximumBytes
 		memByt,                        // memoryMinimumBytes
 		memByt,                        // memoryStartupBytes
@@ -109,28 +115,44 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 		vm.Generation, vm.Notes, vm.AutomaticStartAction, vm.AutomaticStopAction, vm.AutomaticCriticalErrorAction, vm.AutomaticCriticalErrorActionTimeout)
 
 	// --- 4. Update → VM-level / Memory / Processor を変更 ---
-	// timeout / パスは schema 既定を渡す。委譲先の Set-VM は 0 や空文字を受け付けず
-	// ParameterArgumentValidationError になる (実機確認)。resource 層も schema 既定
-	// (timeout=30、パスは C:\ProgramData\Microsoft\Windows\Hyper-V) しか渡さない。
+	// timeout / パスは schema 既定を渡す。0 や空文字は Set-VM が
+	// ParameterArgumentValidationError で拒否するため (実機確認)、PS provider 時代から
+	// 同じ入力は通らなかった。CIM 経路だけがゼロ値を黙殺して「通っているように見えて」いた。
+	// schema には ValidateFunc が無く HCL に `= 0` と書けば到達しうるので、
+	// plan 時点で弾く検証の追加は別途 Issue で追う。
 	const defaultVMPath = `C:\ProgramData\Microsoft\Windows\Hyper-V`
+
+	// automatic_checkpoints_enabled は作成直後の実値をそのまま渡す。
+	// false を要求するとホスト既定 (クライアント Hyper-V は true) との差がゼロ値
+	// ダウングレードになり、余計な PS 委譲を誘発するため。
+	autoCheckpoints := vm.AutomaticCheckpointsEnabled
+
+	// ⚠️ 本テストの Update は現状 **必ず PS へ委譲される**。
+	// static_memory=true を渡して作っても、CreateVm が DynamicMemoryEnabled=false を
+	// 送れず (ゼロ値) ホスト既定の true が残るため、Update で
+	// 「staticMemory && curMem.DynamicMemoryEnabled」のダウングレード判定に必ず当たる。
+	// これは実バグで #143 として追跡している。#143 (または go-wsman #135) が入れば
+	// 本テストは CIM 経路だけで完走するようになる。
+	// PS 呼び出し 0 件の陽性証明は TestRealHostFullLifecycleStrictPS0 /
+	// TestRealHostStrictReadNoPS が担う。
 	if err := cc.UpdateVm(ctx, name,
 		api.CriticalErrorAction_Pause, // (None=0 はゼロ値省略で変更不可のため Pause 維持)
-		30,                            // automaticCriticalErrorActionTimeout (CIM write は未実装 #133)
+		30,                            // automaticCriticalErrorActionTimeout (CIM write は未実装。#133 / go-wsman#119)
 		api.StartAction_Start,         // 変更: Nothing → Start
 		0,
 		api.StopAction_ShutDown, // 変更: Save → ShutDown
 		api.CheckpointType_Production,
 		false,
 		false,
-		0,
+		defaultHighMmio,
 		api.OnOffState_On, // 変更: lockOnDisconnect Off → On
-		0,
+		defaultLowMmio,
 		memByt, memByt, memByt,
 		"phase-d-update", // 変更: Notes
 		2,                // 変更: processorCount 1 → 2
 		defaultVMPath, defaultVMPath,
 		true,
-		false,
+		autoCheckpoints,
 	); err != nil {
 		t.Fatalf("UpdateVm: %v", err)
 	}

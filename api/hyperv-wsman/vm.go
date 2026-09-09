@@ -648,9 +648,11 @@ type vmLevelWant struct {
 	lockOnDisconnect          api.OnOffState
 	lowMmioGapSize            uint32
 	notes                     string
-	smartPagingFilePath       string
-	snapshotFileLocation      string
-	staticMemory              bool
+	// smartPagingFilePath / snapshotFileLocation は現状 vmLevelZeroDowngrade の判定に
+	// 使わない (空 = 指定なし)。UpdateVm の引数と 1:1 に保つため構造体には残す。
+	smartPagingFilePath  string
+	snapshotFileLocation string
+	staticMemory         bool
 }
 
 // vmLevelZeroDowngrade は要求が現行に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。
@@ -688,12 +690,12 @@ func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyp
 	if want.notes == "" && strings.Join(cur.Notes, "\n") != "" {
 		return true
 	}
-	if want.smartPagingFilePath == "" && cur.SwapFileDataRoot != "" {
-		return true
-	}
-	if want.snapshotFileLocation == "" && cur.SnapshotDataRoot != "" {
-		return true
-	}
+	// smartPagingFilePath / snapshotFileLocation は判定に含めない。
+	// これらの空文字は「消す」ではなく「指定なし」を意味する (#99 で BootSourceOrder について
+	// 実機で確定させたのと同じ意味論で、applyVmLevelSettings も空をスキップしている)。
+	// schema 既定も非空 (C:\ProgramData\Microsoft\Windows\Hyper-V) のため resource 層から
+	// 空が来ることは無い。加えて委譲先の Set-VM 自体が空文字を受け付けず
+	// ParameterArgumentValidationError になる (実機確認) ので、委譲しても救えない。
 	// applyMemorySettings は staticMemory 時に DynamicMemoryEnabled=false を代入するが、
 	// これもゼロ値のため送られない。動的→静的の切り替えは PS でしか表現できない。
 	if want.staticMemory && curMem != nil && curMem.DynamicMemoryEnabled {

@@ -650,8 +650,9 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 		{"lockOnDisconnect On→Off", func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_Off }, true},
 		{"guestControlledCacheTypes true→false", func(w *vmLevelWant) { w.guestControlledCacheTypes = false }, true},
 		{"notes 非空→空", func(w *vmLevelWant) { w.notes = "" }, true},
-		{"smartPagingFilePath 非空→空", func(w *vmLevelWant) { w.smartPagingFilePath = "" }, true},
-		{"snapshotFileLocation 非空→空", func(w *vmLevelWant) { w.snapshotFileLocation = "" }, true},
+		// パス系の空は「消す」ではなく「指定なし」(#99 と同じ意味論)。委譲しない。
+		{"smartPagingFilePath 空 = 指定なし", func(w *vmLevelWant) { w.smartPagingFilePath = "" }, false},
+		{"snapshotFileLocation 空 = 指定なし", func(w *vmLevelWant) { w.snapshotFileLocation = "" }, false},
 		{"highMmioGapSize 非ゼロ→0", func(w *vmLevelWant) { w.highMmioGapSize = 0 }, true},
 		{"lowMmioGapSize 非ゼロ→0", func(w *vmLevelWant) { w.lowMmioGapSize = 0 }, true},
 		{"dynamic→static (DynamicMemoryEnabled true→false)", func(w *vmLevelWant) { w.staticMemory = true }, true},

@@ -23,17 +23,15 @@ import (
 	"testing"
 
 	"github.com/taliesins/terraform-provider-hyperv/api"
-	hyperv_wsman "github.com/taliesins/terraform-provider-hyperv/api/hyperv-wsman"
 )
 
 func TestRealHostVmCrudWsman(t *testing.T) {
 	c := realHostConfigFromEnv(t)
-	wsmanClient, err := newWsmanClient(c)
-	if err != nil {
-		t.Fatalf("newWsmanClient: %v", err)
-	}
-	// CRUD メソッドは WsmanClient のみ使う (winrm 埋め込みは不要)。
-	cc := &hyperv_wsman.ClientConfig{WsmanClient: wsmanClient}
+	// #132 以降、UpdateVm はゼロ値ダウングレードを検知すると PS へ委譲するため、
+	// 埋め込み winrm クライアントが要る (以前は WsmanClient だけで足りた)。
+	// 本テストの Update は automatic_checkpoints_enabled=false を要求しており、
+	// クライアント Hyper-V ホストでは既定 true のため必ず委譲経路を通る。
+	cc := newRealHostWsmanClientConfig(t, c)
 	ctx := context.Background()
 
 	const (
@@ -111,9 +109,13 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 		vm.Generation, vm.Notes, vm.AutomaticStartAction, vm.AutomaticStopAction, vm.AutomaticCriticalErrorAction, vm.AutomaticCriticalErrorActionTimeout)
 
 	// --- 4. Update → VM-level / Memory / Processor を変更 ---
+	// timeout / パスは schema 既定を渡す。委譲先の Set-VM は 0 や空文字を受け付けず
+	// ParameterArgumentValidationError になる (実機確認)。resource 層も schema 既定
+	// (timeout=30、パスは C:\ProgramData\Microsoft\Windows\Hyper-V) しか渡さない。
+	const defaultVMPath = `C:\ProgramData\Microsoft\Windows\Hyper-V`
 	if err := cc.UpdateVm(ctx, name,
 		api.CriticalErrorAction_Pause, // (None=0 はゼロ値省略で変更不可のため Pause 維持)
-		0,                             // automaticCriticalErrorActionTimeout (書き込み未実装 #102)
+		30,                            // automaticCriticalErrorActionTimeout (CIM write は未実装 #133)
 		api.StartAction_Start,         // 変更: Nothing → Start
 		0,
 		api.StopAction_ShutDown, // 変更: Save → ShutDown
@@ -126,7 +128,7 @@ func TestRealHostVmCrudWsman(t *testing.T) {
 		memByt, memByt, memByt,
 		"phase-d-update", // 変更: Notes
 		2,                // 変更: processorCount 1 → 2
-		"", "",
+		defaultVMPath, defaultVMPath,
 		true,
 		false,
 	); err != nil {

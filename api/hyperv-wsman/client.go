@@ -15,6 +15,7 @@
 package hyperv_wsman
 
 import (
+	"fmt"
 	"github.com/r4sd/go-wsman/hyperv"
 	"github.com/taliesins/terraform-provider-hyperv/api"
 	hyperv_winrm "github.com/taliesins/terraform-provider-hyperv/api/hyperv-winrm"
@@ -42,6 +43,19 @@ type ClientConfig struct {
 // 未移行のメソッドは hyperv_winrm.ClientConfig が処理し、
 // 移行済みメソッド (Phase B+) は本パッケージで定義された実装が使われる。
 func New(winrmConfig *hyperv_winrm.ClientConfig, wsmanClient *hyperv.Client) (*api.Provider, error) {
+	// 未移行メソッドと、CIM で表現できない変更 (ゼロ値ダウングレード等) の委譲先は
+	// 埋め込みの hyperv_winrm.ClientConfig。nil のまま組み立てると、委譲した瞬間に
+	// nil 参照 panic になる。provider は plugin プロセスなので panic は Terraform ごと落ちる。
+	//
+	// 委譲は本パッケージが明示的に呼ぶ経路だけでなく、api.Client の未シャドウメソッドが
+	// promoted されて直接 hyperv_winrm へ飛ぶ経路も含む。後者は本パッケージ側では
+	// ガードしようが無いため、構成時にまとめて弾く。
+	if winrmConfig == nil {
+		return nil, fmt.Errorf("hyperv-wsman: winrmConfig must not be nil (未移行メソッドと PS 委譲の宛先)")
+	}
+	if wsmanClient == nil {
+		return nil, fmt.Errorf("hyperv-wsman: wsmanClient must not be nil")
+	}
 	return &api.Provider{
 		Client: &ClientConfig{
 			ClientConfig: winrmConfig,

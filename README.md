@@ -57,7 +57,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | `hyperv_network_switch` | ❌ PowerShell のみ |
 | `hyperv_iso_image` | ❌ PowerShell のみ |
 | `hyperv_cloudinit_iso` | ❌ PowerShell のみ |
-| `hyperv_vm_checkpoint` | ❌ PowerShell のみ |
+| `hyperv_vm_checkpoint` | ✅ 対応 |
 
 ### CIM 経路で扱えない入力の 2 通りの挙動
 
@@ -85,6 +85,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | NIC の高度なオプション | QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング / PacketDirect |
 | ハードディスクの高度なオプション | QoS / パススルー / カスタムプール / キャッシュ属性 / 永続予約 |
 | DVD の空メディア(ISO 未指定) | |
+| 同名のチェックポイントが複数存在する | Hyper-V の既定名は秒精度のため同一秒に作ると重複しうる。誤ったチェックポイントを削除/復元しないよう名前で一意に特定できない場合は停止する |
 
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
 

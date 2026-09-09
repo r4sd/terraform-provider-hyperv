@@ -604,3 +604,68 @@ func TestValidateCheckpointFieldsUnchanged(t *testing.T) {
 		}
 	})
 }
+
+// TestVmLevelZeroDowngrade は VM レベル設定・メモリ設定の「非ゼロ→0 / true→false」検出を検証する。
+// これらは marshalEmbeddedInstance のゼロ値非送信により CIM で表現できず、PS 委譲が必要になる。
+func TestVmLevelZeroDowngrade(t *testing.T) {
+	// 現行: 全フィールドが非ゼロ / true。
+	cur := &hyperv.Msvm_VirtualSystemSettingData{
+		AutomaticCriticalErrorAction: 1, // Pause
+		AutomaticStartupAction:       4,
+		AutomaticShutdownAction:      3,
+		GuestControlledCacheTypes:    true,
+		LockOnDisconnect:             true,
+		HighMmioGapSize:              512,
+		LowMmioGapSize:               128,
+		Notes:                        []string{"memo"},
+		SwapFileDataRoot:             `C:\paging`,
+		SnapshotDataRoot:             `C:\snap`,
+	}
+	curMem := &hyperv.Msvm_MemorySettingData{DynamicMemoryEnabled: true}
+
+	// 何も下げない要求 (現行と同じ値)。
+	base := func() vmLevelWant {
+		return vmLevelWant{
+			criticalErrorAction:       api.CriticalErrorAction(1),
+			startAction:               api.StartAction(4),
+			stopAction:                api.StopAction(3),
+			guestControlledCacheTypes: true,
+			highMmioGapSize:           512 * 1024 * 1024,
+			lockOnDisconnect:          api.OnOffState_On,
+			lowMmioGapSize:            128 * 1024 * 1024,
+			notes:                     "memo",
+			smartPagingFilePath:       `C:\paging`,
+			snapshotFileLocation:      `C:\snap`,
+			staticMemory:              false,
+		}
+	}
+
+	cases := []struct {
+		name string
+		mut  func(*vmLevelWant)
+		down bool
+	}{
+		{"変更なし", func(*vmLevelWant) {}, false},
+		{"criticalErrorAction Pause→None(0)", func(w *vmLevelWant) { w.criticalErrorAction = api.CriticalErrorAction(0) }, true},
+		{"lockOnDisconnect On→Off", func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_Off }, true},
+		{"guestControlledCacheTypes true→false", func(w *vmLevelWant) { w.guestControlledCacheTypes = false }, true},
+		{"notes 非空→空", func(w *vmLevelWant) { w.notes = "" }, true},
+		{"smartPagingFilePath 非空→空", func(w *vmLevelWant) { w.smartPagingFilePath = "" }, true},
+		{"snapshotFileLocation 非空→空", func(w *vmLevelWant) { w.snapshotFileLocation = "" }, true},
+		{"highMmioGapSize 非ゼロ→0", func(w *vmLevelWant) { w.highMmioGapSize = 0 }, true},
+		{"lowMmioGapSize 非ゼロ→0", func(w *vmLevelWant) { w.lowMmioGapSize = 0 }, true},
+		{"dynamic→static (DynamicMemoryEnabled true→false)", func(w *vmLevelWant) { w.staticMemory = true }, true},
+		{"notes を別の非空へ変更 (ダウングレードではない)", func(w *vmLevelWant) { w.notes = "other" }, false},
+		{"highMmioGapSize を増やす (ダウングレードではない)", func(w *vmLevelWant) { w.highMmioGapSize = 1024 * 1024 * 1024 }, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := base()
+			tc.mut(&w)
+			if got := vmLevelZeroDowngrade(cur, curMem, w); got != tc.down {
+				t.Errorf("vmLevelZeroDowngrade = %v, want %v", got, tc.down)
+			}
+		})
+	}
+}

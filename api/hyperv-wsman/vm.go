@@ -444,6 +444,10 @@ func (c *ClientConfig) CreateVm(
 // 黙って無視すると「read→drift→shutdown→書き込みは no-op」のループになるため、
 // 現在値との不一致を検知したら明示エラーで PS 経路への委譲を促す
 // (validateCheckpointFieldsUnchanged、Fable 批判的レビュー指摘)。
+//
+// 非ゼロ→0 / true→false のダウングレードは marshalEmbeddedInstance がゼロ値を送らないため
+// CIM で表現できない。vmLevelZeroDowngrade で検知し、書き込み前に PS 経路へ丸ごと委譲する
+// (#132)。vm_processor / vm_firmware と同じ扱い。
 func (c *ClientConfig) UpdateVm(
 	ctx context.Context,
 	name string,
@@ -485,6 +489,40 @@ func (c *ClientConfig) UpdateVm(
 	if err := validateCheckpointFieldsUnchanged(checkpointType, automaticCheckpointsEnabled, cur); err != nil {
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
 	}
+
+	// メモリ設定は後段でも使うが、ゼロ値ダウングレード判定に現行の DynamicMemoryEnabled が
+	// 要るため先に取得する。
+	mem, err := c.WsmanClient.GetMemorySettings(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get memory: %w", name, err)
+	}
+
+	// ゼロ値ダウングレードは CIM で表現できないため、書き込みを 1 件も行わずに PS へ委譲する
+	// (#132)。ここで委譲しないと「成功報告なのに実機は変わらない」恒常 diff になり、
+	// apply のたびに VM が停止する。
+	if vmLevelZeroDowngrade(cur, mem, vmLevelWant{
+		criticalErrorAction:       automaticCriticalErrorAction,
+		startAction:               automaticStartAction,
+		stopAction:                automaticStopAction,
+		guestControlledCacheTypes: guestControlledCacheTypes,
+		highMmioGapSize:           highMemoryMappedIoSpace,
+		lockOnDisconnect:          lockOnDisconnect,
+		lowMmioGapSize:            lowMemoryMappedIoSpace,
+		notes:                     notes,
+		smartPagingFilePath:       smartPagingFilePath,
+		snapshotFileLocation:      snapshotFileLocation,
+		staticMemory:              staticMemory,
+	}) {
+		return c.ClientConfig.UpdateVm(ctx, name,
+			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
+			automaticStartAction, automaticStartDelay, automaticStopAction,
+			checkpointType, dynamicMemory, guestControlledCacheTypes,
+			highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace,
+			memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes,
+			notes, processorCount, smartPagingFilePath, snapshotFileLocation,
+			staticMemory, automaticCheckpointsEnabled)
+	}
+
 	sd := &hyperv.Msvm_VirtualSystemSettingData{InstanceID: cur.InstanceID}
 	applyVmLevelSettings(sd, automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
 		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace,
@@ -495,11 +533,7 @@ func (c *ClientConfig) UpdateVm(
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: wait modify: %w", name, err)
 	}
 
-	// 2. Memory。
-	mem, err := c.WsmanClient.GetMemorySettings(ctx, guid)
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: UpdateVm %q: get memory: %w", name, err)
-	}
+	// 2. Memory (mem は判定用に取得済み)。
 	applyMemorySettings(mem, staticMemory, dynamicMemory, memoryStartupBytes, memoryMinimumBytes, memoryMaximumBytes)
 	if jobRef, err := c.WsmanClient.SetMemorySettings(ctx, mem); err != nil {
 		return fmt.Errorf("hyperv-wsman: UpdateVm %q: set memory: %w", name, err)
@@ -601,6 +635,71 @@ func vmSettingDataForCreate(
 		guestControlledCacheTypes, highMmioGapSize, lockOnDisconnect, lowMmioGapSize,
 		notes, smartPagingFilePath, snapshotFileLocation)
 	return sd, nil
+}
+
+// vmLevelWant は UpdateVm が要求する VM レベル設定 + メモリ方式をまとめたもの。
+// ゼロ値ダウングレード判定 (vmLevelZeroDowngrade) の引数を短く保つために使う。
+type vmLevelWant struct {
+	criticalErrorAction       api.CriticalErrorAction
+	startAction               api.StartAction
+	stopAction                api.StopAction
+	guestControlledCacheTypes bool
+	highMmioGapSize           uint64
+	lockOnDisconnect          api.OnOffState
+	lowMmioGapSize            uint32
+	notes                     string
+	smartPagingFilePath       string
+	snapshotFileLocation      string
+	staticMemory              bool
+}
+
+// vmLevelZeroDowngrade は要求が現行に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。
+//
+// go-wsman の marshalEmbeddedInstance はゼロ値フィールドを送らないため、これらの変更は
+// ModifySystemSettings に乗らない。そのまま処理すると「成功報告なのに実機は変わらない」
+// = 恒常 diff になり、hasChangesThatRequireVmToBeOff 経由で apply のたびに VM が停止する (#132)。
+// vm_processor の hasZeroDowngrade / vm_firmware_write の firmwareZeroDowngrade と同じ役割で、
+// VM レベルにだけ欠けていた。
+//
+// notes / smartPagingFilePath / snapshotFileLocation は applyVmLevelSettings が
+// 空文字を明示的にスキップするため、値の消去も同じく反映されない。
+func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyperv.Msvm_MemorySettingData, want vmLevelWant) bool {
+	if cur == nil {
+		return false
+	}
+	zeroEnum := func(w int, c uint16) bool { return enumToUint16(w) == 0 && c != 0 }
+	if zeroEnum(int(want.criticalErrorAction), cur.AutomaticCriticalErrorAction) ||
+		zeroEnum(int(want.startAction), cur.AutomaticStartupAction) ||
+		zeroEnum(int(want.stopAction), cur.AutomaticShutdownAction) {
+		return true
+	}
+	if !want.guestControlledCacheTypes && cur.GuestControlledCacheTypes {
+		return true
+	}
+	if want.lockOnDisconnect != api.OnOffState_On && cur.LockOnDisconnect {
+		return true
+	}
+	if bytesToMbU64(want.highMmioGapSize) == 0 && cur.HighMmioGapSize != 0 {
+		return true
+	}
+	if bytesToMbU64(uint64(want.lowMmioGapSize)) == 0 && cur.LowMmioGapSize != 0 {
+		return true
+	}
+	if want.notes == "" && strings.Join(cur.Notes, "\n") != "" {
+		return true
+	}
+	if want.smartPagingFilePath == "" && cur.SwapFileDataRoot != "" {
+		return true
+	}
+	if want.snapshotFileLocation == "" && cur.SnapshotDataRoot != "" {
+		return true
+	}
+	// applyMemorySettings は staticMemory 時に DynamicMemoryEnabled=false を代入するが、
+	// これもゼロ値のため送られない。動的→静的の切り替えは PS でしか表現できない。
+	if want.staticMemory && curMem != nil && curMem.DynamicMemoryEnabled {
+		return true
+	}
+	return false
 }
 
 // applyVmLevelSettings は VM レベルの可変フィールドを settings に適用する (Create/Update 共有)。

@@ -53,6 +53,28 @@ func parseIntervalMinutes(s string) (int32, error) {
 	return clampInt32FromInt64(total), nil
 }
 
+// parseIntervalSeconds は datetime(interval) 型の文字列 (ISO 8601 形式) を秒単位の int32 に
+// 変換する。automatic_start_delay が秒単位のため、分単位の parseIntervalMinutes とは別に要る。
+//
+// 実機の既定値は "P0DT0H0M0S" (2026-09-11 確認)。空文字は 0 (未設定) として扱う。
+func parseIntervalSeconds(s string) (int32, error) {
+	if s == "" {
+		return 0, nil
+	}
+	m := intervalISO8601Pattern.FindStringSubmatch(s)
+	if m == nil {
+		return 0, fmt.Errorf("parseIntervalSeconds: unexpected format %q (want ISO 8601 PnDTnHnMnS)", s)
+	}
+	days, err1 := strconv.ParseInt(m[1], 10, 64)
+	hours, err2 := strconv.ParseInt(m[2], 10, 64)
+	minutes, err3 := strconv.ParseInt(m[3], 10, 64)
+	seconds, err4 := strconv.ParseInt(m[4], 10, 64)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return 0, fmt.Errorf("parseIntervalSeconds: failed to parse numeric fields in %q", s)
+	}
+	return clampInt32FromInt64(days*24*3600 + hours*3600 + minutes*60 + seconds), nil
+}
+
 // clampInt32FromInt64 は int64 を int32 に安全に縮小する (上限/下限超過はクランプ)。
 // 直接 int32(v) すると CodeQL が上限チェックなしの縮小変換 (high) として検出するため
 // (clampUint32/clampInt32 と同じ理由)。
@@ -182,6 +204,10 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 	if err != nil {
 		return api.Vm{}, fmt.Errorf("checkpoint_type: %w", err)
 	}
+	startDelay, err := parseIntervalSeconds(sd.AutomaticStartupActionDelay)
+	if err != nil {
+		return api.Vm{}, fmt.Errorf("automatic_start_delay: %w", err)
+	}
 	return api.Vm{
 		Name:                         name,
 		Path:                         sd.ConfigurationDataRoot,
@@ -204,6 +230,9 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		CheckpointType: checkpointType,
 		// #134: 未マッピングだったため read が常に false を返していた。
 		AutomaticCheckpointsEnabled: sd.AutomaticSnapshotsEnabled,
+		// #133: 未マッピングで read が常に 0 だった。書き込みは CIM 不可 (下記) だが、
+		// read が嘘をつくと「差分は出るが一度もエラーにならない」永久ループになる。
+		AutomaticStartDelay: startDelay,
 
 		// 以下は本メソッドでは未設定 (ゼロ値):
 		//   - Memory (MemoryStartupBytes/Min/Max, DynamicMemory, StaticMemory) / ProcessorCount /
@@ -211,8 +240,7 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		//     Msvm_MemorySettingData / Msvm_ProcessorSettingData を別途取得して合成、
 		//     AutomaticCriticalErrorActionTimeout は sd.AutomaticCriticalErrorActionTimeout
 		//     (CIM datetime/interval 文字列) を parseIntervalMinutes で分に変換する。
-		//   - AutomaticStartDelay: 同じく CIM Duration 文字列パースが必要 (#133 で追跡。
-		//     go-wsman types.go には AutomaticStartupActionDelay が既に存在する)。
+		//   - AutomaticStartDelay は下で設定する (#133)。
 	}, nil
 }
 
@@ -518,8 +546,14 @@ func (c *ClientConfig) UpdateVm(
 		checkpointType:              checkpointType,
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
 	}
-	if vmLevelZeroDowngrade(cur, mem, want) {
-		log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
+	// CIM で書けない interval フィールドの変更も PS へ委譲する (#133)。
+	unwritable := cimUnwritableIntervals(cur, automaticStartDelay, automaticCriticalErrorActionTimeout)
+	if vmLevelZeroDowngrade(cur, mem, want) || unwritable {
+		if unwritable {
+			log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: CIM で書けない interval の変更を検出、PS へ委譲します", name)
+		} else {
+			log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
+		}
 		return c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
 			automaticStartAction, automaticStartDelay, automaticStopAction,
@@ -683,6 +717,34 @@ type vmLevelWant struct {
 	// (go-wsman #135 が根本解)。
 	checkpointType              api.CheckpointType
 	automaticCheckpointsEnabled bool
+}
+
+// cimUnwritableIntervals は CIM で書き込めない datetime(interval) フィールドの変更を検知する。
+//
+// AutomaticStartupActionDelay と AutomaticCriticalErrorActionTimeout は
+// **どちらも CIM 経由で書けない** (実機確認、2026-09-11)。ISO 8601 / CIM ネイティブの
+// どちらの書式でも ModifySystemSettings が ErrorCode=32768 で失敗する。原因は文字列書式では
+// なく datetime の TYPE 属性を送れないことにあり、go-wsman 側に型指定の仕組みが要る。
+//
+// MOF は AutomaticCriticalErrorActionTimeout を Read/write と書いているが実機は拒否する。
+// **MOF の Access type は ModifySystemSettings の受理を予測しない** という本リポジトリの
+// 既知の教訓 (SecureBootTemplateId で確認済み) がここでも当てはまる。
+//
+// 検知したら PS へ委譲する。黙って捨てると read が実値を返すので恒常 diff になり、
+// これらは hasChangesThatRequireVmToBeOff に含まれるため apply のたびに VM が停止する。
+func cimUnwritableIntervals(cur *hyperv.Msvm_VirtualSystemSettingData, wantStartDelay, wantTimeout int32) bool {
+	if cur == nil {
+		return false
+	}
+	curDelay, err := parseIntervalSeconds(cur.AutomaticStartupActionDelay)
+	if err != nil {
+		return true // 読めない値は判断できないので安全側 (PS 委譲)
+	}
+	curTimeout, err := parseIntervalMinutes(cur.AutomaticCriticalErrorActionTimeout)
+	if err != nil {
+		return true
+	}
+	return wantStartDelay != curDelay || wantTimeout != curTimeout
 }
 
 // vmLevelZeroDowngrade は要求が現行に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。

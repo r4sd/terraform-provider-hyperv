@@ -842,3 +842,34 @@ func TestApplyVmLevelSettingsWritesCheckpointFields(t *testing.T) {
 		t.Error("AutomaticSnapshotsEnabled = false, want true")
 	}
 }
+
+// TestParseIntervalSeconds は datetime(interval) を秒に変換する。
+// automatic_start_delay は秒単位のため、分単位の parseIntervalMinutes とは別に要る。
+func TestParseIntervalSeconds(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int32
+		wantErr bool
+	}{
+		{"", 0, false},                         // 未設定
+		{"P0DT0H0M0S", 0, false},               // 実機の既定値
+		{"P0DT0H1M30S", 90, false},             // 1 分 30 秒
+		{"P0DT0H0M45S", 45, false},             // 秒のみ
+		{"P0DT2H0M0S", 7200, false},            // 時のみ
+		{"P1DT0H0M0S", 86400, false},           // 日のみ
+		{"P0DT0H30M0S", 1800, false},           // 実機の timeout 既定値と同じ形
+		{"00000000000130.000000:000", 0, true}, // CIM ネイティブ形式は非対応
+		{"90", 0, true},                        // 素の数値も非対応
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseIntervalSeconds(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("parseIntervalSeconds(%q) err = %v, wantErr %v", tc.in, err, tc.wantErr)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Errorf("parseIntervalSeconds(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}

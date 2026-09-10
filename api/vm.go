@@ -385,16 +385,31 @@ type HypervVmClient interface {
 	DeleteVm(ctx context.Context, name string) (err error)
 }
 
-// DiffSuppressNewlines は改行コードの違い (CRLF / CR / LF) を差分とみなさない。
+// NormalizeNotes は notes を CIM 読み取り経路が返せる形へ正規化する。
 //
-// Hyper-V の Notes は CR を保持せず読み戻しが常に LF になるため、config に CRLF を
-// 書くと state (LF) と一致せず恒常 diff になる。notes は
-// hasChangesThatRequireVmToBeOff に含まれるので、apply のたびに VM が停止して
-// 何も変わらないループになる (#145)。
-func DiffSuppressNewlines(key, old, new string, d *schema.ResourceData) bool {
-	return normalizeNewlinesForDiff(old) == normalizeNewlinesForDiff(new)
+// 2 つの正規化を行う。どちらも **Hyper-V 自体は保持するが CIM 読み取りで失われる**
+// ことを実機で確認したもの (PS で書いて PS で読むと残る)。
+//
+//	改行コード : CRLF / CR → LF
+//	            WinRM が生の CR を返し Go の XML デコーダが LF へ正規化するため
+//	末尾改行   : 末尾の LF を除去
+//	            CIM 読み取りで落ちる (送信 "a\nb\n" → 読み戻し "a\nb")
+//
+// 正規化しないと「ホストは CRLF や末尾改行つき・state はそれ無し」と read が実態から
+// ズレる。書き込み時に揃えることで read が正直になる。
+//
+// 末尾改行は HCL の heredoc (`<<-EOT ... EOT`) が必ず付けるため、実運用で最も踏みやすい。
+func NormalizeNotes(s string) string {
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+	return strings.TrimRight(s, "\n")
 }
 
-func normalizeNewlinesForDiff(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+// DiffSuppressNotes は notes の「CIM 経路では表現できない差」を差分とみなさない。
+//
+// 改行コードの違いと末尾改行の有無が対象。config に CRLF や heredoc の末尾改行を
+// 書くと CIM 経路の state と一致せず恒常 diff になる。notes は
+// hasChangesThatRequireVmToBeOff に含まれるので、apply のたびに VM が停止して
+// 何も変わらないループになる (#145)。
+func DiffSuppressNotes(key, old, new string, d *schema.ResourceData) bool {
+	return NormalizeNotes(old) == NormalizeNotes(new)
 }

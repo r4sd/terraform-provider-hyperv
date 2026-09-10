@@ -203,10 +203,45 @@ func TestRealHostMultilineNotes(t *testing.T) {
 	if gotCRLF.Notes != wantLF {
 		t.Fatalf("🔴 got %q, want %q (送信時に LF へ正規化されるはず)", gotCRLF.Notes, wantLF)
 	}
-	if !api.DiffSuppressNewlines("notes", gotCRLF.Notes, crlf, nil) {
+	if !api.DiffSuppressNotes("notes", gotCRLF.Notes, crlf, nil) {
 		t.Errorf("🔴 config の CRLF と state の LF が差分扱いになる。恒常 diff になる")
 	}
 	t.Logf("🎯 CRLF は LF へ正規化され、DiffSuppress が config 側の CRLF を吸収する")
+
+	// --- 末尾改行 (HCL の heredoc 相当) ---
+	//
+	// `<<-EOT ... EOT` は末尾に改行が付く。Hyper-V が末尾をトリムすると
+	// state と config が食い違い、DiffSuppress では吸収できない (行数が変わるため)。
+	// 実機で「トリムされない」ことを確認済みだが、退行を検出できるよう固定する。
+	const trailing = "line1\nline2\n"
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		trailing, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm (末尾改行): %v", err)
+	}
+	gotTrailing, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (末尾改行): %v", err)
+	}
+	t.Logf("④ 末尾改行つき送信後の Notes = %q", gotTrailing.Notes)
+	// 設計判断: 末尾改行は CIM 読み取りで落ちるので送信側で除去し、
+	// config 側の末尾改行は DiffSuppress が吸収する。
+	const wantTrimmed = "line1\nline2"
+	if gotTrailing.Notes != wantTrimmed {
+		t.Fatalf("🔴 got %q, want %q (送信時に末尾改行が除去されるはず)", gotTrailing.Notes, wantTrimmed)
+	}
+	if !api.DiffSuppressNotes("notes", gotTrailing.Notes, trailing, nil) {
+		t.Errorf("🔴 heredoc の末尾改行が差分扱いになる。恒常 diff になる")
+	}
+	t.Logf("🎯 末尾改行は除去され、DiffSuppress が config 側の末尾改行を吸収する")
 
 	t.Logf("🎯 判定: 複数行 notes が create / update とも round-trip する")
 }

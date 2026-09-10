@@ -203,11 +203,12 @@ func resourceHyperVMachineInstance() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 				Default:  "",
-				// Hyper-V は Notes の CR を保持せず、読み戻しは常に LF になる (実機確認)。
+				// CIM 読み取り経路は CR を落とし、読み戻しは常に LF になる (実機確認。
+				// Hyper-V 自体は CR を保持するが WinRM/XML デコードの段で失われる)。
 				// Windows のテキストは CRLF が標準で、Hyper-V マネージャーで手入力した
 				// notes も CRLF になるため、正規化しないと恒常 diff になり
 				// apply のたびに VM が停止する (#145)。
-				DiffSuppressFunc: api.DiffSuppressNewlines,
+				DiffSuppressFunc: api.DiffSuppressNotes,
 				Description:      "Specifies a note to be associated with the machine to be created.",
 			},
 

@@ -899,7 +899,7 @@ func TestApplyVmLevelSettingsNotesSingleElement(t *testing.T) {
 // CR は送信できるが Hyper-V から読み戻すと落ちるため (実機確認)、そのまま送ると
 // 恒常 diff になる。
 func TestApplyVmLevelSettingsNormalizesNewlines(t *testing.T) {
-	for _, in := range []string{"a\r\nb", "a\rb", "a\nb"} {
+	for _, in := range []string{"a\r\nb", "a\rb", "a\nb", "a\nb\n", "a\r\nb\r\n"} {
 		sd := &hyperv.Msvm_VirtualSystemSettingData{}
 		if err := applyVmLevelSettings(sd, vmLevelWant{notes: in}); err != nil {
 			t.Fatalf("applyVmLevelSettings(%q): %v", in, err)

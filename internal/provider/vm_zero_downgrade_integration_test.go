@@ -100,3 +100,75 @@ func TestRealHostVmLevelZeroDowngrade(t *testing.T) {
 	}
 	t.Logf("🎯 判定: ゼロ値ダウングレードが PS 委譲で実際に反映される")
 }
+
+// TestRealHostStartDelayDelegates は CIM で書けない interval の変更が PS へ委譲され、
+// 実際に反映されることを検証する (#133)。
+//
+// AutomaticStartupActionDelay / AutomaticCriticalErrorActionTimeout はどちらも
+// CIM 経由で書けない (実機で ErrorCode=32768)。MOF は後者を Read/write と書いているが
+// 実機は拒否する。黙って捨てると read が実値を返すので恒常 diff になり、
+// apply のたびに VM が停止する。
+func TestRealHostStartDelayDelegates(t *testing.T) {
+	c := realHostConfigFromEnv(t)
+	cc := newRealHostWsmanClientConfig(t, c)
+	ctx := context.Background()
+
+	const vmName = "tf-wsman-delay-test"
+	const memByt = 536870912
+	const defaultVMPath = `C:\ProgramData\Microsoft\Windows\Hyper-V`
+
+	_ = cc.DeleteVm(ctx, vmName)
+	t.Cleanup(func() {
+		if err := cc.DeleteVm(ctx, vmName); err != nil {
+			t.Logf("cleanup DeleteVm: %v", err)
+		}
+	})
+
+	if err := cc.CreateVm(ctx, vmName,
+		"", 1,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		"delay-test", 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("CreateVm: %v", err)
+	}
+
+	before, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm: %v", err)
+	}
+	t.Logf("① 作成直後: AutomaticStartDelay=%d timeout=%d",
+		before.AutomaticStartDelay, before.AutomaticCriticalErrorActionTimeout)
+
+	// start_delay を 90 秒に変える。CIM では書けないので PS へ委譲されるはず。
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 90,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		"delay-test", 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm: %v", err)
+	}
+
+	after, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (after): %v", err)
+	}
+	t.Logf("② 更新後: AutomaticStartDelay=%d", after.AutomaticStartDelay)
+	if after.AutomaticStartDelay != 90 {
+		t.Fatalf("🔴 automatic_start_delay が反映されていない (got %d, want 90)。"+
+			"黙って捨てられると恒常 diff + apply のたびに VM 停止になる", after.AutomaticStartDelay)
+	}
+	t.Logf("🎯 判定: CIM で書けない interval が PS 委譲で反映され、read も実値を返す")
+}

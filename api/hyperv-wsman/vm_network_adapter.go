@@ -211,7 +211,38 @@ func (c *ClientConfig) GetVmNetworkAdapters(ctx context.Context, vmName string, 
 			}
 		}
 	}
-	return result, nil
+	return sortAdaptersByConfigOrder(result, networkAdaptersWaitForIps), nil
+}
+
+// sortAdaptersByConfigOrder は read 結果を config の並びへ寄せる。
+//
+// getNetworkAdapterRefs は ElementName の辞書順で返す (CIM に作成順を表す決定的キーが
+// 無いため)。一方 network_adaptors は schema.TypeList で **位置**で差分を取るので、
+// config の並びが辞書順でないと恒常 diff になる。planNetworkAdapterReconcile は
+// multiset 差分で「変更なし」と判断するため、apply のたびに VM が停止して何も
+// 変わらないループになる (#135)。
+//
+// PowerShell 経路は作成順 (= config 順) を返すため、CIM 経路でだけ発現する差だった。
+// config に無い NIC (外部で追加されたもの) は落とさず、辞書順のまま末尾に置く。
+func sortAdaptersByConfigOrder(adapters []api.VmNetworkAdapter, configOrder []api.VmNetworkAdapterWaitForIp) []api.VmNetworkAdapter {
+	if len(configOrder) == 0 || len(adapters) == 0 {
+		return adapters
+	}
+	remaining := make([]api.VmNetworkAdapter, len(adapters))
+	copy(remaining, adapters)
+
+	sorted := make([]api.VmNetworkAdapter, 0, len(adapters))
+	for _, want := range configOrder {
+		for i := range remaining {
+			if remaining[i].Name == want.Name {
+				sorted = append(sorted, remaining[i])
+				remaining = append(remaining[:i], remaining[i+1:]...)
+				break
+			}
+		}
+	}
+	// config に現れない NIC は元の順序 (辞書順) のまま末尾へ。落とすと state から消える。
+	return append(sorted, remaining...)
 }
 
 // DeleteVmNetworkAdapter は index 番目の NIC を go-wsman 経由で削除する。

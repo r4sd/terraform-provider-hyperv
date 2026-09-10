@@ -200,10 +200,15 @@ func resourceHyperVMachineInstance() *schema.Resource {
 			},
 
 			"notes": {
-				Type:        schema.TypeString,
-				Optional:    true,
-				Default:     "",
-				Description: "Specifies a note to be associated with the machine to be created.",
+				Type:     schema.TypeString,
+				Optional: true,
+				Default:  "",
+				// Hyper-V は Notes の CR を保持せず、読み戻しは常に LF になる (実機確認)。
+				// Windows のテキストは CRLF が標準で、Hyper-V マネージャーで手入力した
+				// notes も CRLF になるため、正規化しないと恒常 diff になり
+				// apply のたびに VM が停止する (#145)。
+				DiffSuppressFunc: api.DiffSuppressNewlines,
+				Description:      "Specifies a note to be associated with the machine to be created.",
 			},
 
 			"processor_count": {

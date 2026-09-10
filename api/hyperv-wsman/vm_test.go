@@ -894,3 +894,18 @@ func TestApplyVmLevelSettingsNotesSingleElement(t *testing.T) {
 		t.Errorf("round-trip 不一致: got %q, want %q", got.Notes, multi)
 	}
 }
+
+// TestApplyVmLevelSettingsNormalizesNewlines は送信時に改行が LF へ揃うことを検証する。
+// CR は送信できるが Hyper-V から読み戻すと落ちるため (実機確認)、そのまま送ると
+// 恒常 diff になる。
+func TestApplyVmLevelSettingsNormalizesNewlines(t *testing.T) {
+	for _, in := range []string{"a\r\nb", "a\rb", "a\nb"} {
+		sd := &hyperv.Msvm_VirtualSystemSettingData{}
+		if err := applyVmLevelSettings(sd, vmLevelWant{notes: in}); err != nil {
+			t.Fatalf("applyVmLevelSettings(%q): %v", in, err)
+		}
+		if len(sd.Notes) != 1 || sd.Notes[0] != "a\nb" {
+			t.Errorf("notes=%q → Notes=%q, want [\"a\\nb\"]", in, sd.Notes)
+		}
+	}
+}

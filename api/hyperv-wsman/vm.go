@@ -659,6 +659,15 @@ func vmSettingDataForCreate(
 	return sd, nil
 }
 
+// normalizeNewlines は CRLF / CR を LF に揃える。
+//
+// Hyper-V の Notes は CR を保持せず読み戻しで落ちる (実機確認)。Windows のテキストは
+// CRLF が標準で、Hyper-V マネージャーで手入力した notes も CRLF になるため、
+// 正規化しないと「送信 CRLF → 読み戻し LF」で恒常 diff になる。
+func normalizeNewlines(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+}
+
 // vmLevelWant は Create/Update が要求する VM レベル設定 + メモリ方式をまとめたもの。
 // applyVmLevelSettings の入力と vmLevelZeroDowngrade の判定材料を兼ねる。
 // 同型の引数 (bool 複数・string 複数) が位置指定で並ぶと取り違えてもコンパイルが通るため、
@@ -774,7 +783,12 @@ func applyVmLevelSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want vmLevel
 		//
 		// read 側 (vmFromSettingData) は strings.Join(sd.Notes, "\n") なので、
 		// 1 要素なら Join は恒等になり round-trip が成立する。
-		sd.Notes = []string{want.notes}
+		//
+		// あわせて改行を LF へ正規化する。CR は送信できるが **Hyper-V から読み戻すと
+		// 落ちる** (実機確認: 送信 "a\r\nb" → 読み戻し "a\nb")。そのまま送ると
+		// 恒常 diff になるため、送る側で読み戻せる形に揃える。
+		// config 側の CRLF は schema の DiffSuppressFunc が吸収する。
+		sd.Notes = []string{normalizeNewlines(want.notes)}
 	}
 	// checkpoint_type (#125)。ゼロ値は「未指定」なので送らない。
 	if want.checkpointType != 0 {

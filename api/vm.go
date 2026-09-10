@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
 // ErrVMNotFound は指定名の VM が存在しないことを表す番兵エラー。
@@ -381,4 +383,18 @@ type HypervVmClient interface {
 	) (err error)
 
 	DeleteVm(ctx context.Context, name string) (err error)
+}
+
+// DiffSuppressNewlines は改行コードの違い (CRLF / CR / LF) を差分とみなさない。
+//
+// Hyper-V の Notes は CR を保持せず読み戻しが常に LF になるため、config に CRLF を
+// 書くと state (LF) と一致せず恒常 diff になる。notes は
+// hasChangesThatRequireVmToBeOff に含まれるので、apply のたびに VM が停止して
+// 何も変わらないループになる (#145)。
+func DiffSuppressNewlines(key, old, new string, d *schema.ResourceData) bool {
+	return normalizeNewlinesForDiff(old) == normalizeNewlinesForDiff(new)
+}
+
+func normalizeNewlinesForDiff(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
 }

@@ -170,5 +170,43 @@ func TestRealHostMultilineNotes(t *testing.T) {
 	if after.Notes != updated {
 		t.Fatalf("🔴 update で複数行 notes が失われている: got %q, want %q", after.Notes, updated)
 	}
+	// --- CRLF の round-trip ---
+	//
+	// Windows のテキストは CRLF が標準で、Hyper-V マネージャーで手入力した notes も
+	// CRLF になる。go-wsman は CR を文字参照 (&#xD;) にエスケープして送るが、
+	// **読み戻しで CR が保持されるかは WinRM の応答形式次第** (Go の XML デコーダは
+	// 生の \r を \n へ正規化し、文字参照の CR は保持する)。
+	// 崩れる場合は「送信 CRLF → 読み戻し LF」で恒常 diff になるため実機に問う。
+	const crlf = "one\r\ntwo\r\nthree"
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		crlf, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm (CRLF): %v", err)
+	}
+	gotCRLF, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (CRLF): %v", err)
+	}
+	t.Logf("③ CRLF 送信後の Notes = %q", gotCRLF.Notes)
+	// 設計判断: Hyper-V は CR を保持しないので **送信側で LF へ正規化**し、
+	// config 側の CRLF は schema の DiffSuppressFunc が吸収する。
+	// したがって読み戻しは LF になるのが正しい。
+	const wantLF = "one\ntwo\nthree"
+	if gotCRLF.Notes != wantLF {
+		t.Fatalf("🔴 got %q, want %q (送信時に LF へ正規化されるはず)", gotCRLF.Notes, wantLF)
+	}
+	if !api.DiffSuppressNewlines("notes", gotCRLF.Notes, crlf, nil) {
+		t.Errorf("🔴 config の CRLF と state の LF が差分扱いになる。恒常 diff になる")
+	}
+	t.Logf("🎯 CRLF は LF へ正規化され、DiffSuppress が config 側の CRLF を吸収する")
+
 	t.Logf("🎯 判定: 複数行 notes が create / update とも round-trip する")
 }

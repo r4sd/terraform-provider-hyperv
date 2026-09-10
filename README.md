@@ -52,16 +52,22 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 
 | リソース | CIM 経路 |
 |----------|----------|
-| `hyperv_vhd` | ✅ 対応(`source` / `source_vm` 指定時は PowerShell) |
+| `hyperv_vhd` | ✅ 対応(`source` / `source_vm` 指定時と削除は PowerShell) |
 | `hyperv_machine_instance` | ⚠️ 一部(下記) |
 | `hyperv_network_switch` | ❌ PowerShell のみ |
 | `hyperv_iso_image` | ❌ PowerShell のみ |
 | `hyperv_cloudinit_iso` | ❌ PowerShell のみ |
 | `hyperv_vm_checkpoint` | ✅ 対応 |
 
-### CIM 経路で扱えない入力の 2 通りの挙動
+### CIM 経路で扱えない入力の 3 通りの挙動
 
-**挙動が 2 種類あり、利用者から見た結果が大きく違う。**
+**挙動が 3 種類あり、利用者から見た結果が大きく違う。**
+
+| | 挙動 | 気付けるか |
+|---|---|---|
+| **A** | 自動で PowerShell に落ちる | 気付かなくてよい(正しく反映される) |
+| **B** | エラーで停止する | すぐ気付く |
+| **C** | **黙って捨てられ恒常 diff になる** | **気付きにくい。apply のたびに VM が停止する** |
 
 #### A. 自動で PowerShell に落ちる(何もしなくても動く)
 
@@ -69,17 +75,21 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 |------|------|
 | **OS インストール済み Gen2 VM の firmware read** | **最も頻繁に踏む**。Windows Boot Manager の boot entry を CIM 側が解釈できないため。plan / refresh のたびに発生する |
 | `wait_for_ips = true` | |
-| 非ゼロ → 0 / false へのダウングレード | CIM はゼロ値を送れず黙殺されるため、意図的に委譲する |
+| 非ゼロ → 0 / false へのダウングレード | CIM はゼロ値を送れず黙殺されるため、意図的に委譲する。VM レベル設定 / `vm_processor` / `vm_firmware` の 3 箇所にガードがある |
 | `secure_boot_template` が未知の GUID / 名前 | 既知の対応表に無いもの |
 | `gpu_adapters` が非空 | 割り当ての CIM 実装が未着手 |
 | `automatic_checkpoints_enabled` を true → false | false は CIM で送れないため(`checkpoint_type` は CIM で変更できる) |
 | `hyperv_vhd` の `source` / `source_vm` 指定 | ファイルコピー / VM ディスクキャプチャは CIM の範囲外 |
+| `hyperv_vhd` の削除(`terraform destroy`) | ファイル削除は CIM の範囲外。移行状況表では ✅ だが削除だけは PowerShell が走る |
 | 稼働中 VM のチェックポイント復元 | CIM の `ApplySnapshot` は種別に関係なく稼働中 VM を受け付けない(`ReturnValue=32775`)。PowerShell はスナップショット時点の状態へ戻せるため委譲する |
 
 #### B. エラーで停止する(`HYPERV_USE_WSMAN` を外す必要がある)
 
 **こちらは apply が失敗する。** 黙って PowerShell に落ちることはしない
 (気付かないまま設定が反映されない事故を避けるため)。
+
+> ⚠️ ただし **C の経路はこの原則から漏れている**。「気付かないまま設定が反映されない」
+> 事故が別の形で起きているので、下記 C も併せて確認すること。
 
 | 条件 | 備考 |
 |------|------|
@@ -88,6 +98,23 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | DVD の空メディア(ISO 未指定) | |
 | 同名のチェックポイントが複数存在する | Hyper-V の既定名は秒精度のため同一秒に作ると重複しうる。誤ったチェックポイントを削除/復元しないよう名前で一意に特定できない場合は停止する |
 | 同一 VM のチェックポイントを別プロセスから並列作成する | 作成したものを一覧の差分で特定するため、同時作成があると特定できない。同一プロセス内は直列化する |
+
+#### C. 黙って捨てられる(恒常 diff になる)
+
+**A でも B でもない第 3 の挙動が残っている。** CIM に値が送られないまま成功が返り、
+read は実値を返すため差分が消えない。これらのフィールドは
+`hasChangesThatRequireVmToBeOff` に含まれるので、**apply のたびに VM が停止して
+何も変わらない**ループになる。
+
+| 条件 | 追跡 |
+|------|------|
+| `automatic_start_delay` を指定する | [#133](https://github.com/r4sd/terraform-provider-hyperv/issues/133)。read も常に 0 のため一度もエラーにならない |
+| `automatic_critical_error_action_timeout` を既定 (30) 以外にする | [#133](https://github.com/r4sd/terraform-provider-hyperv/issues/133) / go-wsman [#119](https://github.com/r4sd/go-wsman/issues/119)。read は実値を返すため恒常 diff になる |
+| `static_memory = true` で **新規作成** する | [#143](https://github.com/r4sd/terraform-provider-hyperv/issues/143)。動的メモリの VM ができる。次の apply で PowerShell へ委譲されて修正される |
+
+根本原因は go-wsman がゼロ値を明示的に送れないこと
+(go-wsman [#135](https://github.com/r4sd/go-wsman/issues/135))。
+update 経路は上記 A 表のガードで委譲するが、**create 経路にはガードが無い**。
 
 ### PowerShell 経路との既知の差分
 

@@ -2,6 +2,9 @@ package hyperv_wsman
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 
@@ -264,5 +267,147 @@ func TestMapNetworkAdapterRefs_ElementNameOrder(t *testing.T) {
 	}
 	if got[0].adapter.Index != 0 || got[1].adapter.Index != 1 {
 		t.Errorf("Index が順序どおりでない")
+	}
+}
+
+// TestSortAdaptersByConfigOrder は read 結果を config の並びへ寄せることを検証する。
+//
+// mapNetworkAdapterRefs は ElementName の辞書順で返すが、network_adaptors は
+// schema.TypeList で **位置**で差分を取る。config の並びが辞書順でないと
+// 恒常 diff になり、planNetworkAdapterReconcile は multiset 差分なので no-op となり、
+// apply のたびに VM が停止して何も変わらないループになる (#135)。
+//
+// PowerShell 経路は作成順 (= config 順) を返すため、CIM 経路でだけ発現する差だった。
+func TestSortAdaptersByConfigOrder(t *testing.T) {
+	mk := func(names ...string) []api.VmNetworkAdapter {
+		out := make([]api.VmNetworkAdapter, 0, len(names))
+		for _, n := range names {
+			out = append(out, api.VmNetworkAdapter{Name: n})
+		}
+		return out
+	}
+	cfg := func(names ...string) []api.VmNetworkAdapterWaitForIp {
+		out := make([]api.VmNetworkAdapterWaitForIp, 0, len(names))
+		for _, n := range names {
+			out = append(out, api.VmNetworkAdapterWaitForIp{Name: n})
+		}
+		return out
+	}
+	names := func(a []api.VmNetworkAdapter) []string {
+		out := make([]string, 0, len(a))
+		for _, x := range a {
+			out = append(out, x.Name)
+		}
+		return out
+	}
+	eq := func(t *testing.T, got []api.VmNetworkAdapter, want ...string) {
+		t.Helper()
+		g := names(got)
+		if len(g) != len(want) {
+			t.Fatalf("got %v, want %v", g, want)
+		}
+		for i := range want {
+			if g[i] != want[i] {
+				t.Fatalf("got %v, want %v", g, want)
+			}
+		}
+	}
+
+	t.Run("config 順へ並べ替える", func(t *testing.T) {
+		// read は辞書順 [External, Internal]、config は [Internal, External]。
+		got := sortAdaptersByConfigOrder(mk("External", "Internal"), cfg("Internal", "External"))
+		eq(t, got, "Internal", "External")
+	})
+
+	t.Run("config に無い NIC は末尾に辞書順で残す", func(t *testing.T) {
+		// 外部で足された NIC を落とすと state から消えてしまう。
+		got := sortAdaptersByConfigOrder(mk("Alpha", "External", "Internal"), cfg("Internal"))
+		eq(t, got, "Internal", "Alpha", "External")
+	})
+
+	t.Run("config が空なら元の順序を保つ", func(t *testing.T) {
+		got := sortAdaptersByConfigOrder(mk("External", "Internal"), nil)
+		eq(t, got, "External", "Internal")
+	})
+
+	t.Run("同名 NIC が複数あっても落とさない", func(t *testing.T) {
+		// 同名 NIC は本経路では非対応だが、read が数を減らすと state が壊れる。
+		got := sortAdaptersByConfigOrder(mk("dup", "dup", "other"), cfg("other", "dup"))
+		if len(got) != 3 {
+			t.Fatalf("NIC が %d 件に減っている: %v", len(got), names(got))
+		}
+		if got[0].Name != "other" {
+			t.Errorf("config 先頭が反映されていない: %v", names(got))
+		}
+	})
+}
+
+// TestGetVmNetworkAdaptersUsesConfigOrder は GetVmNetworkAdapters が config 順ソートを
+// **実際に呼んでいる**ことを検証する。
+//
+// 純関数のテストだけでは配線を見ないため、ソートの呼び出しを外す変異が素通りしていた
+// (#145 で同型の穴を踏んだのと同じ)。
+func TestGetVmNetworkAdaptersUsesConfigOrder(t *testing.T) {
+	const vmGUID = "11111111-aaaa-bbbb-cccc-000000000001"
+	const vmName = "vm-1"
+
+	enumXML := `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:e="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+  <s:Header><a:Action>http://schemas.xmlsoap.org/ws/2004/09/enumeration/EnumerateResponse</a:Action></s:Header>
+  <s:Body><e:EnumerateResponse><e:EnumerationContext>ctx</e:EnumerationContext></e:EnumerateResponse></s:Body>
+</s:Envelope>`
+	csPull := fmt.Sprintf(`<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:e="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem">
+  <s:Header><a:Action>http://schemas.xmlsoap.org/ws/2004/09/enumeration/PullResponse</a:Action></s:Header>
+  <s:Body><e:PullResponse><e:Items>
+    <p:Msvm_ComputerSystem><p:Name>%s</p:Name><p:ElementName>%s</p:ElementName><p:EnabledState>3</p:EnabledState></p:Msvm_ComputerSystem>
+  </e:Items><e:EndOfSequence/></e:PullResponse></s:Body>
+</s:Envelope>`, vmGUID, vmName)
+	// 辞書順で External → Internal を返す。config は逆順。
+	portPull := fmt.Sprintf(`<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:e="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_SyntheticEthernetPortSettingData">
+  <s:Header><a:Action>http://schemas.xmlsoap.org/ws/2004/09/enumeration/PullResponse</a:Action></s:Header>
+  <s:Body><e:PullResponse><e:Items>
+    <p:Msvm_SyntheticEthernetPortSettingData><p:InstanceID>Microsoft:%s\\A</p:InstanceID><p:ElementName>External</p:ElementName></p:Msvm_SyntheticEthernetPortSettingData>
+    <p:Msvm_SyntheticEthernetPortSettingData><p:InstanceID>Microsoft:%s\\B</p:InstanceID><p:ElementName>Internal</p:ElementName></p:Msvm_SyntheticEthernetPortSettingData>
+  </e:Items><e:EndOfSequence/></e:PullResponse></s:Body>
+</s:Envelope>`, vmGUID, vmGUID)
+	emptyPull := `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:e="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+  <s:Header><a:Action>http://schemas.xmlsoap.org/ws/2004/09/enumeration/PullResponse</a:Action></s:Header>
+  <s:Body><e:PullResponse><e:Items/><e:EndOfSequence/></e:PullResponse></s:Body>
+</s:Envelope>`
+
+	responses := []string{
+		enumXML, csPull, // resolveVMGUID
+		enumXML, portPull, // ports
+		enumXML, emptyPull, // allocations
+		enumXML, emptyPull, // switches
+	}
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if n >= len(responses) {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
+		_, _ = w.Write([]byte(responses[n]))
+		n++
+	}))
+	defer srv.Close()
+
+	wsmanClient, err := hyperv.NewClient(srv.URL)
+	if err != nil {
+		t.Fatalf("hyperv.NewClient: %v", err)
+	}
+	c := &ClientConfig{WsmanClient: wsmanClient}
+
+	got, err := c.GetVmNetworkAdapters(context.Background(), vmName,
+		[]api.VmNetworkAdapterWaitForIp{{Name: "Internal"}, {Name: "External"}})
+	if err != nil {
+		t.Fatalf("GetVmNetworkAdapters: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d 件, want 2", len(got))
+	}
+	if got[0].Name != "Internal" || got[1].Name != "External" {
+		t.Errorf("config 順になっていない: [%s %s], want [Internal External]。"+
+			"ソートが呼ばれていないと辞書順のままになる (#135)", got[0].Name, got[1].Name)
 	}
 }

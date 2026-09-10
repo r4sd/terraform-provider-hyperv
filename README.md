@@ -57,7 +57,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | `hyperv_network_switch` | ❌ PowerShell のみ |
 | `hyperv_iso_image` | ❌ PowerShell のみ |
 | `hyperv_cloudinit_iso` | ❌ PowerShell のみ |
-| `hyperv_vm_checkpoint` | ❌ PowerShell のみ |
+| `hyperv_vm_checkpoint` | ✅ 対応 |
 
 ### CIM 経路で扱えない入力の 2 通りの挙動
 
@@ -74,6 +74,7 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | `gpu_adapters` が非空 | 割り当ての CIM 実装が未着手 |
 | `automatic_checkpoints_enabled` を true → false | false は CIM で送れないため(`checkpoint_type` は CIM で変更できる) |
 | `hyperv_vhd` の `source` / `source_vm` 指定 | ファイルコピー / VM ディスクキャプチャは CIM の範囲外 |
+| 稼働中 VM のチェックポイント復元 | CIM の `ApplySnapshot` は種別に関係なく稼働中 VM を受け付けない(`ReturnValue=32775`)。PowerShell はスナップショット時点の状態へ戻せるため委譲する |
 
 #### B. エラーで停止する(`HYPERV_USE_WSMAN` を外す必要がある)
 
@@ -85,6 +86,19 @@ WinRM 経由で Hyper-V の VM・ネットワーク・ストレージを Terrafo
 | NIC の高度なオプション | QoS / IOV / MAC spoofing / 各種 guard / VLAN / 帯域 / チーミング / PacketDirect |
 | ハードディスクの高度なオプション | QoS / パススルー / カスタムプール / キャッシュ属性 / 永続予約 |
 | DVD の空メディア(ISO 未指定) | |
+| 同名のチェックポイントが複数存在する | Hyper-V の既定名は秒精度のため同一秒に作ると重複しうる。誤ったチェックポイントを削除/復元しないよう名前で一意に特定できない場合は停止する |
+| 同一 VM のチェックポイントを別プロセスから並列作成する | 作成したものを一覧の差分で特定するため、同時作成があると特定できない。同一プロセス内は直列化する |
+
+### PowerShell 経路との既知の差分
+
+| 項目 | PowerShell | CIM |
+|------|-----------|-----|
+| `hyperv_vm_checkpoint` の `creation_time` | ローカル時刻 + オフセット(`2026-09-10T01:20:31.4447620+09:00`) | UTC(`2026-09-09T16:20:31.444762Z`) |
+| 稼働中 VM の復元後の状態 | スナップショット時点の状態(Standard なら Running のまま) | 同左(PowerShell へ委譲するため) |
+
+同じ瞬間を指すが文字列表現が異なる。`creation_time` は Computed なので plan の差分にはならないが、
+PowerShell 時代の state を `HYPERV_USE_WSMAN=1` で refresh すると state 上の値が書き換わる。
+output で参照している場合は表示が変わる。
 
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
 

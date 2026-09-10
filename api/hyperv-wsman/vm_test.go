@@ -521,8 +521,10 @@ func TestVmSettingDataForCreate(t *testing.T) {
 	if sd.SwapFileDataRoot != pagePath {
 		t.Errorf("SwapFileDataRoot=%q", sd.SwapFileDataRoot)
 	}
-	if len(sd.Notes) != 2 || sd.Notes[0] != "note1" || sd.Notes[1] != "note2" {
-		t.Errorf("Notes=%v, want [note1 note2]", sd.Notes)
+	// Notes は 1 要素に改行を含める形が正しい。複数要素で送ると Hyper-V が先頭以外を
+	// 捨てるため、以前の「改行で分割して 2 要素」はバグを仕様として固定していた (#145)。
+	if len(sd.Notes) != 1 || sd.Notes[0] != "note1\nnote2" {
+		t.Errorf("Notes=%v, want [\"note1\\nnote2\"] (1 要素)", sd.Notes)
 	}
 	// #125: create 経路で checkpoint 系が配線されていること。
 	if sd.UserSnapshotType != 3 { // Production
@@ -620,8 +622,8 @@ func TestApplyVmLevelSettings(t *testing.T) {
 	if sd.SnapshotDataRoot != existingSnap {
 		t.Errorf("snapshot 空文字なら既存維持のはず: %q", sd.SnapshotDataRoot)
 	}
-	if len(sd.Notes) != 2 || sd.Notes[0] != "n1" || sd.Notes[1] != "n2" {
-		t.Errorf("Notes=%v, want [n1 n2]", sd.Notes)
+	if len(sd.Notes) != 1 || sd.Notes[0] != "n1\nn2" {
+		t.Errorf("Notes=%v, want [\"n1\\nn2\"] (1 要素、#145)", sd.Notes)
 	}
 }
 
@@ -840,5 +842,55 @@ func TestApplyVmLevelSettingsWritesCheckpointFields(t *testing.T) {
 	}
 	if !sd3.AutomaticSnapshotsEnabled {
 		t.Error("AutomaticSnapshotsEnabled = false, want true")
+	}
+}
+
+// TestApplyVmLevelSettingsNotesSingleElement は複数行 notes が 1 要素で送られることを検証する。
+//
+// Hyper-V の Notes は MOF 上 string[] だが実質単一値で、複数要素を送ると先頭以外が
+// 捨てられる (実機確認)。分割して送っていたため複数行 notes が 1 行目だけになり、
+// read は実値を返すので恒常 diff + apply のたびに VM 停止になっていた (#145)。
+func TestApplyVmLevelSettingsNotesSingleElement(t *testing.T) {
+	cases := []struct {
+		name  string
+		notes string
+		want  []string
+	}{
+		{"単一行", "hello", []string{"hello"}},
+		{"複数行は 1 要素に改行を含める", "alpha\nbeta\ngamma", []string{"alpha\nbeta\ngamma"}},
+		{"空は送らない", "", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sd := &hyperv.Msvm_VirtualSystemSettingData{}
+			if err := applyVmLevelSettings(sd, vmLevelWant{notes: tc.notes}); err != nil {
+				t.Fatalf("applyVmLevelSettings: %v", err)
+			}
+			if len(sd.Notes) != len(tc.want) {
+				t.Fatalf("Notes = %v (%d 要素), want %v (%d 要素)。"+
+					"複数要素で送ると Hyper-V が先頭以外を捨てる", sd.Notes, len(sd.Notes), tc.want, len(tc.want))
+			}
+			for i := range tc.want {
+				if sd.Notes[i] != tc.want[i] {
+					t.Errorf("Notes[%d] = %q, want %q", i, sd.Notes[i], tc.want[i])
+				}
+			}
+		})
+	}
+
+	// read との round-trip。1 要素なら Join は恒等になる。
+	sd := &hyperv.Msvm_VirtualSystemSettingData{}
+	const multi = "alpha\nbeta\ngamma"
+	if err := applyVmLevelSettings(sd, vmLevelWant{notes: multi}); err != nil {
+		t.Fatalf("applyVmLevelSettings: %v", err)
+	}
+	sd.VirtualSystemSubType = hyperv.VirtualSystemSubTypeGen1
+	sd.UserSnapshotType = hyperv.UserSnapshotTypeProductionFallbackToTest
+	got, err := vmFromSettingData("vm-1", sd)
+	if err != nil {
+		t.Fatalf("vmFromSettingData: %v", err)
+	}
+	if got.Notes != multi {
+		t.Errorf("round-trip 不一致: got %q, want %q", got.Notes, multi)
 	}
 }

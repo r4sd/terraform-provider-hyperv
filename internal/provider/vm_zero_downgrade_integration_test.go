@@ -100,3 +100,75 @@ func TestRealHostVmLevelZeroDowngrade(t *testing.T) {
 	}
 	t.Logf("🎯 判定: ゼロ値ダウングレードが PS 委譲で実際に反映される")
 }
+
+// TestRealHostMultilineNotes は複数行 notes が round-trip することを実機で検証する (#145)。
+//
+// Hyper-V の Notes は MOF 上 string[] だが実質単一値で、複数要素を送ると先頭以外が
+// 捨てられる。修正前は改行で分割して送っていたため 1 行目だけになり、read は実値を
+// 返すので恒常 diff + apply のたびに VM 停止という #106 型のループになっていた。
+func TestRealHostMultilineNotes(t *testing.T) {
+	c := realHostConfigFromEnv(t)
+	cc := newRealHostWsmanClientConfig(t, c)
+	ctx := context.Background()
+
+	const vmName = "tf-wsman-notes-test"
+	const memByt = 536870912
+	const defaultVMPath = `C:\ProgramData\Microsoft\Windows\Hyper-V`
+	const multiline = "alpha\nbeta\ngamma"
+
+	_ = cc.DeleteVm(ctx, vmName)
+	t.Cleanup(func() {
+		if err := cc.DeleteVm(ctx, vmName); err != nil {
+			t.Logf("cleanup DeleteVm: %v", err)
+		}
+	})
+
+	if err := cc.CreateVm(ctx, vmName,
+		"", 1,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		multiline, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("CreateVm: %v", err)
+	}
+
+	got, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm: %v", err)
+	}
+	t.Logf("① create 後の Notes = %q", got.Notes)
+	if got.Notes != multiline {
+		t.Fatalf("🔴 create で複数行 notes が失われている: got %q, want %q", got.Notes, multiline)
+	}
+
+	// update でも同じこと。
+	const updated = "one\ntwo\nthree\nfour"
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		updated, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm: %v", err)
+	}
+	after, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (after): %v", err)
+	}
+	t.Logf("② update 後の Notes = %q", after.Notes)
+	if after.Notes != updated {
+		t.Fatalf("🔴 update で複数行 notes が失われている: got %q, want %q", after.Notes, updated)
+	}
+	t.Logf("🎯 判定: 複数行 notes が create / update とも round-trip する")
+}

@@ -255,6 +255,23 @@ func TestApplyFirmwareSettings_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestApplyFirmwareSettings_SecureBootFalse は secure_boot=Off が **明示的に** 送られることを
+// 検証する (go-wsman #149)。
+//
+// nil (= 送らない) だと以前の挙動に戻り、Off 要求が黙殺されてホスト既定 (Gen2 は true) のまま
+// になる。「true の時だけセットする」変異を撃墜するためのケース。
+func TestApplyFirmwareSettings_SecureBootFalse(t *testing.T) {
+	sd := &hyperv.Msvm_VirtualSystemSettingData{InstanceID: "x"}
+	applyFirmwareSettings(sd, firmwareCIMValues{secureBoot: false})
+
+	if sd.SecureBoot == nil {
+		t.Fatal("SecureBoot が nil (明示的に false を送っていない)")
+	}
+	if *sd.SecureBoot {
+		t.Errorf("SecureBoot = true, want false")
+	}
+}
+
 func TestCreateOrUpdateVmFirmwares_Guards(t *testing.T) {
 	c := &ClientConfig{} // WsmanClient も埋め込み winrm も nil
 	if err := c.CreateOrUpdateVmFirmwares(t.Context(), "vm", nil); err != nil {

@@ -303,7 +303,11 @@ func TestApplyMemorySettings(t *testing.T) {
 	t.Run("static は固定メモリ・Min/Max無視", func(t *testing.T) {
 		m := &hyperv.Msvm_MemorySettingData{InstanceID: "x"}
 		applyMemorySettings(m, true, false, 2147483648, 1073741824, 4294967296)
-		if m.DynamicMemoryEnabled != nil && *m.DynamicMemoryEnabled {
+		// nil (= 送っていない) も失敗にする。nil を許すと「static 時に代入しない」
+		// = 旧挙動 (ゼロ値スキップで黙殺) に戻す変異が素通りする。
+		if m.DynamicMemoryEnabled == nil {
+			t.Error("static: DynamicMemoryEnabled が nil (明示的に false を送っていない)")
+		} else if *m.DynamicMemoryEnabled {
 			t.Error("static: DynamicMemoryEnabled は false であるべき")
 		}
 		if m.VirtualQuantity != 2048 {
@@ -536,7 +540,9 @@ func TestVmSettingDataForCreate(t *testing.T) {
 		t.Errorf("UserSnapshotType=%d, want 3 (Production)", sd.UserSnapshotType)
 	}
 	// guestControlledCacheTypes=true を渡しているので、取り違えていればここが true になる。
-	if sd.AutomaticSnapshotsEnabled != nil && *sd.AutomaticSnapshotsEnabled {
+	if sd.AutomaticSnapshotsEnabled == nil {
+		t.Error("AutomaticSnapshotsEnabled が nil (明示的に false を送っていない)")
+	} else if *sd.AutomaticSnapshotsEnabled {
 		t.Error("AutomaticSnapshotsEnabled=true, want false (引数の取り違え?)")
 	}
 
@@ -656,7 +662,6 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 		SnapshotDataRoot:             `C:\snap`,
 		AutomaticSnapshotsEnabled:    boolPtr(true),
 	}
-	memDynamic := &hyperv.Msvm_MemorySettingData{DynamicMemoryEnabled: boolPtr(true)}
 
 	// 現行 B: schema 既定に近い「もともとゼロ / false」の VM。
 	// 同じゼロ値を要求してもダウングレードではないので委譲してはいけない。
@@ -672,7 +677,6 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 		SwapFileDataRoot:             "",
 		SnapshotDataRoot:             "",
 	}
-	memStatic := &hyperv.Msvm_MemorySettingData{DynamicMemoryEnabled: boolPtr(false)}
 
 	// 現行 A と一致する要求 (何も下げない)。
 	wantMatchingNonZero := func() vmLevelWant {
@@ -716,53 +720,52 @@ func TestVmLevelZeroDowngrade(t *testing.T) {
 	cases := []struct {
 		name string
 		cur  *hyperv.Msvm_VirtualSystemSettingData
-		mem  *hyperv.Msvm_MemorySettingData
 		base func() vmLevelWant
 		mut  func(*vmLevelWant)
 		down bool
 	}{
 		// --- 現行が非ゼロ: ゼロへ下げる要求は委譲する ---
-		{"A: 変更なし", curNonZero, memDynamic, wantMatchingNonZero, func(*vmLevelWant) {}, false},
-		{"A: criticalErrorAction Pause→None", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.criticalErrorAction = api.CriticalErrorAction_None }, true},
-		{"A: lockOnDisconnect On→Off", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_Off }, true},
-		{"A: guestControlledCacheTypes true→false", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.guestControlledCacheTypes = false }, true},
-		{"A: notes 非空→空", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.notes = "" }, true},
-		{"A: highMmioGapSize 非ゼロ→0", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.highMmioGapSize = 0 }, true},
-		{"A: lowMmioGapSize 非ゼロ→0", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.lowMmioGapSize = 0 }, true},
+		{"A: 変更なし", curNonZero, wantMatchingNonZero, func(*vmLevelWant) {}, false},
+		{"A: criticalErrorAction Pause→None", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.criticalErrorAction = api.CriticalErrorAction_None }, true},
+		{"A: lockOnDisconnect On→Off", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_Off }, true},
+		{"A: guestControlledCacheTypes true→false", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.guestControlledCacheTypes = false }, true},
+		{"A: notes 非空→空", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.notes = "" }, true},
+		{"A: highMmioGapSize 非ゼロ→0", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.highMmioGapSize = 0 }, true},
+		{"A: lowMmioGapSize 非ゼロ→0", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.lowMmioGapSize = 0 }, true},
 		// 下記 2 件は go-wsman #135 / #149 でポインタ化され、明示的に false を送れるようになった。
 		// 以前はゼロ値スキップで黙殺されるため PS 委譲が必要だった。
-		{"B: dynamic→static は CIM で表現可能 (go-wsman #149)", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.staticMemory = true }, false},
-		{"B: automaticCheckpointsEnabled true→false は CIM で表現可能 (go-wsman #135)", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = false }, false},
+		{"B: dynamic→static は CIM で表現可能 (go-wsman #149)", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.staticMemory = true }, false},
+		{"B: automaticCheckpointsEnabled true→false は CIM で表現可能 (go-wsman #135)", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = false }, false},
 		// checkpoint_type は有効値 2..5 でゼロ値が無いため、どの値へ変えても送信できる。
-		{"A: checkpointType 変更はダウングレードでない", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.checkpointType = api.CheckpointType_Standard }, false},
+		{"A: checkpointType 変更はダウングレードでない", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.checkpointType = api.CheckpointType_Standard }, false},
 		// パス系の空は「消す」ではなく「指定なし」(#99 と同じ意味論)。委譲しない。
-		{"A: smartPagingFilePath 空 = 指定なし", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.smartPagingFilePath = "" }, false},
-		{"A: snapshotFileLocation 空 = 指定なし", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.snapshotFileLocation = "" }, false},
+		{"A: smartPagingFilePath 空 = 指定なし", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.smartPagingFilePath = "" }, false},
+		{"A: snapshotFileLocation 空 = 指定なし", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.snapshotFileLocation = "" }, false},
 		// ダウングレードでない変更
-		{"A: notes を別の非空へ", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.notes = "other" }, false},
-		{"A: highMmioGapSize を増やす", curNonZero, memDynamic, wantMatchingNonZero, func(w *vmLevelWant) { w.highMmioGapSize = 1024 * 1024 * 1024 }, false},
+		{"A: notes を別の非空へ", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.notes = "other" }, false},
+		{"A: highMmioGapSize を増やす", curNonZero, wantMatchingNonZero, func(w *vmLevelWant) { w.highMmioGapSize = 1024 * 1024 * 1024 }, false},
 
 		// --- 現行もゼロ: 同じゼロ値の要求は委譲しない (PS-0 を守る) ---
 		// このブロックが無いと判定式から「現行が非ゼロ」の連言を落としても検出できない。
-		{"B: 全てゼロ同士 (既定 VM の no-op apply)", curZero, memStatic, wantMatchingZero, func(*vmLevelWant) {}, false},
-		{"B: criticalErrorAction None のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.criticalErrorAction = api.CriticalErrorAction_None }, false},
-		{"B: lockOnDisconnect Off のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_Off }, false},
-		{"B: guestControlledCacheTypes false のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.guestControlledCacheTypes = false }, false},
-		{"B: notes 空のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.notes = "" }, false},
-		{"B: MMIO 0 のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.highMmioGapSize, w.lowMmioGapSize = 0, 0 }, false},
-		{"B: 既に static のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.staticMemory = true }, false},
+		{"B: 全てゼロ同士 (既定 VM の no-op apply)", curZero, wantMatchingZero, func(*vmLevelWant) {}, false},
+		{"B: criticalErrorAction None のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.criticalErrorAction = api.CriticalErrorAction_None }, false},
+		{"B: lockOnDisconnect Off のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_Off }, false},
+		{"B: guestControlledCacheTypes false のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.guestControlledCacheTypes = false }, false},
+		{"B: notes 空のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.notes = "" }, false},
+		{"B: MMIO 0 のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.highMmioGapSize, w.lowMmioGapSize = 0, 0 }, false},
+		{"B: 既に static のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.staticMemory = true }, false},
 		// 現行ゼロから上げる方向は当然委譲不要
-		{"B: automaticCheckpointsEnabled false のまま", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = false }, false},
-		{"B: automaticCheckpointsEnabled false→true", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = true }, false},
-		{"B: notes 空→非空", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.notes = "new" }, false},
-		{"B: lockOnDisconnect Off→On", curZero, memStatic, wantMatchingZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_On }, false},
+		{"B: automaticCheckpointsEnabled false のまま", curZero, wantMatchingZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = false }, false},
+		{"B: automaticCheckpointsEnabled false→true", curZero, wantMatchingZero, func(w *vmLevelWant) { w.automaticCheckpointsEnabled = true }, false},
+		{"B: notes 空→非空", curZero, wantMatchingZero, func(w *vmLevelWant) { w.notes = "new" }, false},
+		{"B: lockOnDisconnect Off→On", curZero, wantMatchingZero, func(w *vmLevelWant) { w.lockOnDisconnect = api.OnOffState_On }, false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w := tc.base()
 			tc.mut(&w)
-			if got := vmLevelZeroDowngrade(tc.cur, tc.mem, w); got != tc.down {
+			if got := vmLevelZeroDowngrade(tc.cur, w); got != tc.down {
 				t.Errorf("vmLevelZeroDowngrade = %v, want %v", got, tc.down)
 			}
 		})
@@ -832,7 +835,9 @@ func TestApplyVmLevelSettingsWritesCheckpointFields(t *testing.T) {
 	if sd2.UserSnapshotType != 0 {
 		t.Errorf("未指定時の UserSnapshotType = %d, want 0 (送らない)", sd2.UserSnapshotType)
 	}
-	if sd2.AutomaticSnapshotsEnabled != nil && *sd2.AutomaticSnapshotsEnabled {
+	if sd2.AutomaticSnapshotsEnabled == nil {
+		t.Error("AutomaticSnapshotsEnabled が nil (明示的に false を送っていない)")
+	} else if *sd2.AutomaticSnapshotsEnabled {
 		t.Error("AutomaticSnapshotsEnabled = true, want false (定数で潰されていないか)")
 	}
 
@@ -904,6 +909,8 @@ func TestApplyVmLevelSettingsIntervals(t *testing.T) {
 		{"時間をまたぐ", 3661, 120, "P0DT1H1M1S", "P0DT2H0M0S"},
 		{"日をまたぐ", 90000, 1440, "P1DT1H0M0S", "P1DT0H0M0S"},
 		{"負値は 0 に倒す", -5, 0, "P0DT0H0M0S", "P0DT0H0M0S"},
+		// 分→秒の換算を int32 で行うと桁溢れして負数になり、黙って 0 を書いてしまう。
+		{"分の桁溢れ境界", 0, 35791395, "P0DT0H0M0S", "P24855DT3H15M0S"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -991,3 +998,38 @@ func TestApplyVmLevelSettingsNormalizesNewlines(t *testing.T) {
 
 // boolPtr は go-wsman のポインタフィールド (#135 / #149) にリテラルを渡すためのヘルパ。
 func boolPtr(b bool) *bool { return &b }
+
+// TestPointerFieldsNilFallback は go-wsman のポインタフィールドが nil の時の倒し方を固定する。
+//
+// 応答に含まれないホストでは nil になる (AutomaticSnapshotsEnabled は Win10/2016+ のみ)。
+// そのまま deref すると panic するため既定へ倒しているが、倒す向きを間違えると
+// 恒常 diff になるので固定しておく。
+func TestPointerFieldsNilFallback(t *testing.T) {
+	t.Run("DynamicMemoryEnabled が nil なら static 扱い", func(t *testing.T) {
+		vm := &api.Vm{}
+		applyMemoryToVm(vm, &hyperv.Msvm_MemorySettingData{VirtualQuantity: 2048})
+		if vm.DynamicMemory {
+			t.Error("DynamicMemory = true, want false")
+		}
+		if !vm.StaticMemory {
+			t.Error("StaticMemory = false, want true")
+		}
+	})
+
+	t.Run("SecureBoot が nil なら Off 扱い", func(t *testing.T) {
+		got := firmwareFromSystemSettingData("vm1", &hyperv.Msvm_VirtualSystemSettingData{})
+		if got.EnableSecureBoot != api.OnOffState_Off {
+			t.Errorf("EnableSecureBoot = %v, want Off", got.EnableSecureBoot)
+		}
+	})
+
+	t.Run("SecureBoot が nil なら firmwareWriteNoop は false 相当で比較", func(t *testing.T) {
+		cur := &hyperv.Msvm_VirtualSystemSettingData{}
+		if !firmwareWriteNoop(cur, firmwareCIMValues{secureBoot: false}) {
+			t.Error("nil と false は一致扱いであるべき (差分なし)")
+		}
+		if firmwareWriteNoop(cur, firmwareCIMValues{secureBoot: true}) {
+			t.Error("nil と true は差分であるべき")
+		}
+	})
+}

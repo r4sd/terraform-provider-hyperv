@@ -291,7 +291,7 @@ func TestRealHostStartDelayViaCIM(t *testing.T) {
 	t.Logf("① 作成直後: AutomaticStartDelay=%d timeout=%d",
 		before.AutomaticStartDelay, before.AutomaticCriticalErrorActionTimeout)
 
-	// start_delay を 90 秒に変える。CIM では書けないので PS へ委譲されるはず。
+	// start_delay を 90 秒に変える。CIM で書けるようになった (go-wsman #119)ので PS へ委譲されるはず。
 	if err := cc.UpdateVm(ctx, vmName,
 		api.CriticalErrorAction_Pause, 30,
 		api.StartAction_Nothing, 90,

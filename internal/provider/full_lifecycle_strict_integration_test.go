@@ -105,6 +105,23 @@ func TestRealHostFullLifecycleStrictPS0(t *testing.T) {
 	if vm.Generation != 2 {
 		t.Fatalf("Generation: got %d, want 2", vm.Generation)
 	}
+	// **PS-0 だけでは不十分。** 書き込みが黙殺されてホスト既定のままでも PS 呼び出しは
+	// 0 件になるため、要求値が実際に反映されたことを併せて確認する
+	// (本リポジトリで繰り返している「成功報告なのに実機は変わらない」の型)。
+	// いずれもホスト既定と異なる値を要求している。
+	if !vm.StaticMemory {
+		t.Errorf("🔴 static_memory=true を要求したのに DynamicMemory のまま (黙殺されている)")
+	}
+	if vm.AutomaticCheckpointsEnabled {
+		t.Errorf("🔴 automatic_checkpoints_enabled=false を要求したのに true のまま (黙殺されている)")
+	}
+	if vm.AutomaticStartDelay != 90 {
+		t.Errorf("🔴 automatic_start_delay=90 を要求したのに %d (黙殺されている)", vm.AutomaticStartDelay)
+	}
+	if vm.AutomaticCriticalErrorActionTimeout != 45 {
+		t.Errorf("🔴 automatic_critical_error_action_timeout=45 を要求したのに %d (黙殺されている)",
+			vm.AutomaticCriticalErrorActionTimeout)
+	}
 
 	// --- 2. NIC (スイッチ接続なし、go-wsman #114 回避) ---
 	// go-wsman 経路は NIC 本体+スイッチ接続+MAC のみ対応 (unsupportedNetworkAdapterOptions)。

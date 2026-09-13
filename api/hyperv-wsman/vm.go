@@ -27,52 +27,51 @@ import (
 // ではなく TYPE 属性側。go-wsman 側に datetime 型を明示できる仕組み (cim タグ拡張等) が要る。
 var intervalISO8601Pattern = regexp.MustCompile(`^P(\d+)DT(\d+)H(\d+)M(\d+)S$`)
 
-// parseIntervalMinutes は datetime(interval) 型の文字列 (ISO 8601 形式、上記パターン参照) を
-// 分単位の int32 に変換する。AutomaticCriticalErrorActionTimeout は Hyper-V が分単位に丸める
-// 仕様 (MOF 記載) のため秒は通常 0 だが、端数があれば切り上げる (防御的)。空文字は 0 (未設定)
-// として扱う。
-func parseIntervalMinutes(s string) (int32, error) {
+// parseIntervalTotalSeconds は datetime(interval) 型の文字列 (ISO 8601 形式、上記パターン参照)
+// を総秒数に変換する。空文字は 0 (未設定) として扱う。分単位・秒単位の両ラッパが使う。
+func parseIntervalTotalSeconds(s string) (int64, error) {
 	if s == "" {
 		return 0, nil
 	}
 	m := intervalISO8601Pattern.FindStringSubmatch(s)
 	if m == nil {
-		return 0, fmt.Errorf("parseIntervalMinutes: unexpected format %q (want ISO 8601 PnDTnHnMnS)", s)
+		return 0, fmt.Errorf("parseIntervalTotalSeconds: unexpected format %q (want ISO 8601 PnDTnHnMnS)", s)
 	}
 	days, err1 := strconv.ParseInt(m[1], 10, 64)
 	hours, err2 := strconv.ParseInt(m[2], 10, 64)
 	minutes, err3 := strconv.ParseInt(m[3], 10, 64)
 	seconds, err4 := strconv.ParseInt(m[4], 10, 64)
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-		return 0, fmt.Errorf("parseIntervalMinutes: failed to parse numeric fields in %q", s)
+		return 0, fmt.Errorf("parseIntervalTotalSeconds: failed to parse numeric fields in %q", s)
 	}
-	total := days*24*60 + hours*60 + minutes
-	if seconds > 0 {
-		total++
-	}
-	return clampInt32FromInt64(total), nil
+	return days*24*3600 + hours*3600 + minutes*60 + seconds, nil
 }
 
-// parseIntervalSeconds は datetime(interval) 型の文字列 (ISO 8601 形式) を秒単位の int32 に
-// 変換する。automatic_start_delay が秒単位のため、分単位の parseIntervalMinutes とは別に要る。
+// parseIntervalMinutes は datetime(interval) 型の文字列を分単位の int32 に変換する。
+// AutomaticCriticalErrorActionTimeout は Hyper-V が分単位に丸める仕様 (MOF 記載) のため
+// 秒は通常 0 だが、端数があれば切り上げる (防御的)。
+func parseIntervalMinutes(s string) (int32, error) {
+	total, err := parseIntervalTotalSeconds(s)
+	if err != nil {
+		return 0, err
+	}
+	minutes := total / 60
+	if total%60 > 0 {
+		minutes++
+	}
+	return clampInt32FromInt64(minutes), nil
+}
+
+// parseIntervalSeconds は datetime(interval) 型の文字列を秒単位の int32 に変換する。
+// automatic_start_delay が秒単位のため、分単位の parseIntervalMinutes とは別に要る。
 //
-// 実機の既定値は "P0DT0H0M0S" (2026-09-11 確認)。空文字は 0 (未設定) として扱う。
+// 実機の既定値は "P0DT0H0M0S" (2026-09-11 確認)。
 func parseIntervalSeconds(s string) (int32, error) {
-	if s == "" {
-		return 0, nil
+	total, err := parseIntervalTotalSeconds(s)
+	if err != nil {
+		return 0, err
 	}
-	m := intervalISO8601Pattern.FindStringSubmatch(s)
-	if m == nil {
-		return 0, fmt.Errorf("parseIntervalSeconds: unexpected format %q (want ISO 8601 PnDTnHnMnS)", s)
-	}
-	days, err1 := strconv.ParseInt(m[1], 10, 64)
-	hours, err2 := strconv.ParseInt(m[2], 10, 64)
-	minutes, err3 := strconv.ParseInt(m[3], 10, 64)
-	seconds, err4 := strconv.ParseInt(m[4], 10, 64)
-	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-		return 0, fmt.Errorf("parseIntervalSeconds: failed to parse numeric fields in %q", s)
-	}
-	return clampInt32FromInt64(days*24*3600 + hours*3600 + minutes*60 + seconds), nil
+	return clampInt32FromInt64(total), nil
 }
 
 // clampInt32FromInt64 は int64 を int32 に安全に縮小する (上限/下限超過はクランプ)。
@@ -547,7 +546,11 @@ func (c *ClientConfig) UpdateVm(
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
 	}
 	// CIM で書けない interval フィールドの変更も PS へ委譲する (#133)。
-	unwritable := cimUnwritableIntervals(cur, automaticStartDelay, automaticCriticalErrorActionTimeout)
+	unwritable, err := cimUnwritableIntervals(cur,
+		startDelaySeconds(automaticStartDelay), criticalErrorTimeoutMinutes(automaticCriticalErrorActionTimeout))
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
+	}
 	if vmLevelZeroDowngrade(cur, mem, want) || unwritable {
 		if unwritable {
 			log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: CIM で書けない interval の変更を検出、PS へ委譲します", name)
@@ -719,32 +722,43 @@ type vmLevelWant struct {
 	automaticCheckpointsEnabled bool
 }
 
-// cimUnwritableIntervals は CIM で書き込めない datetime(interval) フィールドの変更を検知する。
+// cimUnwritableIntervals は現行 go-wsman で書き込めない datetime(interval) フィールドの
+// 変更を検知する。
 //
-// AutomaticStartupActionDelay と AutomaticCriticalErrorActionTimeout は
-// **どちらも CIM 経由で書けない** (実機確認、2026-09-11)。ISO 8601 / CIM ネイティブの
-// どちらの書式でも ModifySystemSettings が ErrorCode=32768 で失敗する。原因は文字列書式では
-// なく datetime の TYPE 属性を送れないことにあり、go-wsman 側に型指定の仕組みが要る。
-//
-// MOF は AutomaticCriticalErrorActionTimeout を Read/write と書いているが実機は拒否する。
-// **MOF の Access type は ModifySystemSettings の受理を予測しない** という本リポジトリの
-// 既知の教訓 (SecureBootTemplateId で確認済み) がここでも当てはまる。
+// AutomaticStartupActionDelay と AutomaticCriticalErrorActionTimeout はどちらも
+// ModifySystemSettings が ErrorCode=32768 で拒否する (実機確認、2026-09-11)。
+// ISO 8601 / CIM ネイティブのどちらの書式でも同じエラーになるため、原因は文字列の中身ではなく
+// **go-wsman の marshaler が datetime 型を TYPE="string" で送ること** にある
+// (go-wsman #119。intervalISO8601Pattern のコメント参照)。
+// #119 が解消すれば CIM で書けるようになり、この委譲は不要になる。
 //
 // 検知したら PS へ委譲する。黙って捨てると read が実値を返すので恒常 diff になり、
 // これらは hasChangesThatRequireVmToBeOff に含まれるため apply のたびに VM が停止する。
-func cimUnwritableIntervals(cur *hyperv.Msvm_VirtualSystemSettingData, wantStartDelay, wantTimeout int32) bool {
+//
+// cur が nil (VM 未取得) なら判断材料が無いので false を返す。パース不能は呼び出し元へ
+// エラーを返す (GetVm も同じ入力で hard fail するため、到達するのは異常系のみ)。
+//
+// 引数は named type にしてある。両方 int32 だと取り違えても
+// コンパイルが通り、既定 config (delay=0 / timeout=30) では「常に PS 委譲」という
+// PS-0 を壊す方向の変異になるが、実機テストは「委譲が起きた」しか見ないので素通りする。
+// 単体テストでは原理的に検出できないため型で塞ぐ。
+type startDelaySeconds int32
+
+type criticalErrorTimeoutMinutes int32
+
+func cimUnwritableIntervals(cur *hyperv.Msvm_VirtualSystemSettingData, wantStartDelay startDelaySeconds, wantTimeout criticalErrorTimeoutMinutes) (bool, error) {
 	if cur == nil {
-		return false
+		return false, nil
 	}
 	curDelay, err := parseIntervalSeconds(cur.AutomaticStartupActionDelay)
 	if err != nil {
-		return true // 読めない値は判断できないので安全側 (PS 委譲)
+		return false, fmt.Errorf("AutomaticStartupActionDelay: %w", err)
 	}
 	curTimeout, err := parseIntervalMinutes(cur.AutomaticCriticalErrorActionTimeout)
 	if err != nil {
-		return true
+		return false, fmt.Errorf("AutomaticCriticalErrorActionTimeout: %w", err)
 	}
-	return wantStartDelay != curDelay || wantTimeout != curTimeout
+	return wantStartDelay != startDelaySeconds(curDelay) || wantTimeout != criticalErrorTimeoutMinutes(curTimeout), nil
 }
 
 // vmLevelZeroDowngrade は要求が現行に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。

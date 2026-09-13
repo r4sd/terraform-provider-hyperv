@@ -450,7 +450,10 @@ func TestParseIntervalMinutes(t *testing.T) {
 		{"空文字はゼロ扱い", "", 0, false},
 		{"時+分の合算 (1時間30分=90分)", "P0DT1H30M0S", 90, false},
 		{"日+時+分の合算 (1日2時間3分=1563分)", "P1DT2H3M0S", 1*24*60 + 2*60 + 3, false},
+		{"端数は切り上げ (1分30秒=2分)", "P0DT0H1M30S", 2, false},
+		{"1秒でも1分へ切り上げ", "P0DT0H0M1S", 1, false},
 		{"不正な書式はエラー", "not-a-duration", 0, true},
+		{"CIM ネイティブ形式は非対応", "00000000003000.000000:000", 0, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -871,6 +874,49 @@ func TestParseIntervalSeconds(t *testing.T) {
 			}
 			if !tc.wantErr && got != tc.want {
 				t.Errorf("parseIntervalSeconds(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCimUnwritableIntervals は PS 委譲の判定を検証する。
+//
+// 「常に true」= PS-0 を壊す方向の変異は実機テストでは捕まらない
+// (TestRealHostStartDelayDelegates は「委譲が起きた」しか見ないため)。
+// 引数の取り違えも既定 config (delay=0 / timeout=30) で毎 apply 委譲になるが実機は通る。
+// ここで両方向を固定する。
+func TestCimUnwritableIntervals(t *testing.T) {
+	sd := func(delay, timeout string) *hyperv.Msvm_VirtualSystemSettingData {
+		return &hyperv.Msvm_VirtualSystemSettingData{
+			AutomaticStartupActionDelay:         delay,
+			AutomaticCriticalErrorActionTimeout: timeout,
+		}
+	}
+	cases := []struct {
+		name        string
+		cur         *hyperv.Msvm_VirtualSystemSettingData
+		wantDelay   startDelaySeconds
+		wantTimeout criticalErrorTimeoutMinutes
+		want        bool
+		wantErr     bool
+	}{
+		{"cur が nil なら判断しない", nil, 90, 30, false, false},
+		{"既定値どおりなら委譲しない", sd("P0DT0H0M0S", "P0DT0H30M0S"), 0, 30, false, false},
+		{"非既定でも一致すれば委譲しない", sd("P0DT0H1M30S", "P0DT0H5M0S"), 90, 5, false, false},
+		{"delay だけ違えば委譲する", sd("P0DT0H0M0S", "P0DT0H30M0S"), 90, 30, true, false},
+		{"timeout だけ違えば委譲する", sd("P0DT0H0M0S", "P0DT0H30M0S"), 0, 45, true, false},
+		{"両方違えば委譲する", sd("P0DT0H1M30S", "P0DT0H30M0S"), 0, 45, true, false},
+		{"delay がパース不能ならエラー", sd("90", "P0DT0H30M0S"), 0, 30, false, true},
+		{"timeout がパース不能ならエラー", sd("P0DT0H0M0S", "30"), 0, 30, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := cimUnwritableIntervals(tc.cur, tc.wantDelay, tc.wantTimeout)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("cimUnwritableIntervals = %v, want %v", got, tc.want)
 			}
 		})
 	}

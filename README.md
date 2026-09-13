@@ -114,9 +114,16 @@ output で参照している場合は表示が変わる。
 - `wait_for_ips = false`
 - `automatic_checkpoints_enabled` がホストの既定と一致していること
   (クライアント Hyper-V の既定は `true`。schema 既定の `false` にすると PowerShell へ委譲される)
+- `static_memory = false` (動的メモリ)。`true` は create 時点で PowerShell へ委譲される
+- `high_memory_mapped_io_space` / `low_memory_mapped_io_space` /
+  `automatic_critical_error_action_timeout` が実機既定 (512MB / 128MB / 30 分) と一致していること
 - プロセッサとファームウェアが既定値のまま
 
 つまり現時点では**使い捨ての検証用 VM でのみ成立する**。実運用の構成では PowerShell が動く。
+
+「非ゼロ→0」「true→false」の要求は CIM のペイロードに乗らないため、**create の時点で
+PowerShell に委譲して正しい VM を作る**(黙って別物を作らない)。根本解は
+go-wsman [#135](https://github.com/r4sd/go-wsman/issues/135)。
 
 移行の方式と判断の経緯は [`docs/adr/`](docs/adr/README.md) を参照。
 

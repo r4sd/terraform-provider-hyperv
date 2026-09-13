@@ -253,7 +253,7 @@ func TestRealHostMultilineNotes(t *testing.T) {
 // CIM 経由で書けない (実機で ErrorCode=32768)。MOF は後者を Read/write と書いているが
 // 実機は拒否する。黙って捨てると read が実値を返すので恒常 diff になり、
 // apply のたびに VM が停止する。
-func TestRealHostStartDelayDelegates(t *testing.T) {
+func TestRealHostStartDelayViaCIM(t *testing.T) {
 	c := realHostConfigFromEnv(t)
 	cc := newRealHostWsmanClientConfig(t, c)
 	ctx := context.Background()
@@ -315,5 +315,5 @@ func TestRealHostStartDelayDelegates(t *testing.T) {
 		t.Fatalf("🔴 automatic_start_delay が反映されていない (got %d, want 90)。"+
 			"黙って捨てられると恒常 diff + apply のたびに VM 停止になる", after.AutomaticStartDelay)
 	}
-	t.Logf("🎯 判定: CIM で書けない interval が PS 委譲で反映され、read も実値を返す")
+	t.Logf("🎯 判定: interval が CIM で書け、read も実値を返す")
 }

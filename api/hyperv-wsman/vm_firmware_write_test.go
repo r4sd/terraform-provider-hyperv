@@ -41,7 +41,7 @@ func TestBuildFirmwareCIMValues_UnknownTemplate(t *testing.T) {
 
 func TestFirmwareWriteNoop(t *testing.T) {
 	current := &hyperv.Msvm_VirtualSystemSettingData{
-		SecureBoot:                   true,
+		SecureBoot:                   boolPtr(true),
 		SecureBootTemplateId:         secureBootTemplateMicrosoftWindowsGUID,
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
 		ConsoleMode:                  hyperv.ConsoleModeDefault,
@@ -169,14 +169,16 @@ func TestFirmwareZeroDowngrade(t *testing.T) {
 		wantDowngrade bool
 	}{
 		{
-			name:          "SecureBoot true→false は非表現",
-			current:       &hyperv.Msvm_VirtualSystemSettingData{SecureBoot: true},
+			// go-wsman #149 でポインタ化され、明示的に false を送れるようになった。
+			// 以前はゼロ値スキップで黙殺されるため PS 委譲が必要だった。
+			name:          "SecureBoot true→false は CIM で表現可能 (go-wsman #149)",
+			current:       &hyperv.Msvm_VirtualSystemSettingData{SecureBoot: boolPtr(true)},
 			want:          firmwareCIMValues{secureBoot: false},
-			wantDowngrade: true,
+			wantDowngrade: false,
 		},
 		{
 			name:          "SecureBoot false→true は表現可能",
-			current:       &hyperv.Msvm_VirtualSystemSettingData{SecureBoot: false},
+			current:       &hyperv.Msvm_VirtualSystemSettingData{SecureBoot: boolPtr(false)},
 			want:          firmwareCIMValues{secureBoot: true},
 			wantDowngrade: false,
 		},
@@ -245,7 +247,7 @@ func TestApplyFirmwareSettings_RoundTrip(t *testing.T) {
 	if sd.InstanceID != "keep-me" {
 		t.Errorf("InstanceID は保持されるべき: got %q", sd.InstanceID)
 	}
-	if !sd.SecureBoot || sd.SecureBootTemplateId != want.secureBootTemplateGUID ||
+	if sd.SecureBoot == nil || !*sd.SecureBoot || sd.SecureBootTemplateId != want.secureBootTemplateGUID ||
 		sd.NetworkBootPreferredProtocol != want.networkBootProtocol ||
 		sd.ConsoleMode != want.consoleMode || !sd.PauseAfterBootFailure ||
 		!reflect.DeepEqual(sd.BootSourceOrder, want.bootSourceOrder) {

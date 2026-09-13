@@ -77,24 +77,27 @@ func TestRealHostFullLifecycleStrictPS0(t *testing.T) {
 	})
 
 	// --- 1. Create (Gen2) ---
-	// 引数はすべて **ホスト既定と一致する値** を渡す必要がある。CreateVm は作成後に再読し、
-	// ゼロ値ダウングレード (非ゼロ→0 / true→false) を検知すると PS へ委譲するため (#141)。
-	// go-wsman #135 (ポインタフィールド) が解消するまではこの制約が残る。
+	// **ホスト既定と異なる値**を意図的に渡す。かつて PS 委譲が必要だった組み合わせで、
+	// go-wsman #135 / #149 (ポインタフィールド) と #119 (datetime タグ) により
+	// CIM だけで書けるようになった。ここが PS-0 で通ることが移行の本体。
 	//
-	//	MMIO      : 0 は「送らない」= ホスト既定 512MB/128MB になるので schema 既定を渡す
-	//	timeout   : 実機既定は 30 分
-	//	staticMemory / automaticCheckpointsEnabled: 実機既定は dynamic / true
+	//	staticMemory=true             : ホスト既定は dynamic (go-wsman #149)
+	//	automaticCheckpointsEnabled=false : ホスト既定は true (go-wsman #135)
+	//	timeout=45 / delay=90         : ホスト既定は 30 / 0 (go-wsman #119)
+	//
+	// MMIO だけは 0 が「送らない」= ホスト既定になるため schema 既定を渡す
+	// (0 は「無効値」であって「ゼロ値へのダウングレード要求」ではない)。
 	mustNoPS("CreateVm", cc.CreateVm(ctx, vmName,
 		"", 2,
-		api.CriticalErrorAction_Pause, 30,
-		api.StartAction_Nothing, 0,
+		api.CriticalErrorAction_Pause, 45,
+		api.StartAction_Nothing, 90,
 		api.StopAction_Save,
 		api.CheckpointType_Production,
-		true, false, highMmioDefault,
+		false, false, highMmioDefault,
 		api.OnOffState_Off, lowMmioDefault,
 		memByt, memByt, memByt,
 		"full-lifecycle-test", 1,
-		"", "", false, true,
+		"", "", true, false,
 	))
 
 	vm, err := cc.GetVm(ctx, vmName)

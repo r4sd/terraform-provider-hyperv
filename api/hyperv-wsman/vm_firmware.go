@@ -66,8 +66,9 @@ func secureBootTemplateNameToGUID(name string) (guid string, ok bool) {
 // 組み立てる純関数。BootOrders は常に nil を返す (呼び出し側の GetVmFirmware が
 // resolveBootOrdersForVM で別途解決し、成功すれば上書きする)。
 func firmwareFromSystemSettingData(vmName string, settings *hyperv.Msvm_VirtualSystemSettingData) api.VmFirmware {
+	// go-wsman #149 でポインタ化。返さないホストでは nil なので Off に倒す。
 	enableSecureBoot := api.OnOffState_Off
-	if settings.SecureBoot {
+	if settings.SecureBoot != nil && *settings.SecureBoot {
 		enableSecureBoot = api.OnOffState_On
 	}
 

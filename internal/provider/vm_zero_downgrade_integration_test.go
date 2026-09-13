@@ -100,3 +100,148 @@ func TestRealHostVmLevelZeroDowngrade(t *testing.T) {
 	}
 	t.Logf("🎯 判定: ゼロ値ダウングレードが PS 委譲で実際に反映される")
 }
+
+// TestRealHostMultilineNotes は複数行 notes が round-trip することを実機で検証する (#145)。
+//
+// Hyper-V の Notes は MOF 上 string[] だが実質単一値で、複数要素を送ると先頭以外が
+// 捨てられる。修正前は改行で分割して送っていたため 1 行目だけになり、read は実値を
+// 返すので恒常 diff + apply のたびに VM 停止という #106 型のループになっていた。
+func TestRealHostMultilineNotes(t *testing.T) {
+	c := realHostConfigFromEnv(t)
+	cc := newRealHostWsmanClientConfig(t, c)
+	ctx := context.Background()
+
+	const vmName = "tf-wsman-notes-test"
+	const memByt = 536870912
+	const defaultVMPath = `C:\ProgramData\Microsoft\Windows\Hyper-V`
+	const multiline = "alpha\nbeta\ngamma"
+
+	_ = cc.DeleteVm(ctx, vmName)
+	t.Cleanup(func() {
+		if err := cc.DeleteVm(ctx, vmName); err != nil {
+			t.Logf("cleanup DeleteVm: %v", err)
+		}
+	})
+
+	if err := cc.CreateVm(ctx, vmName,
+		"", 1,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		multiline, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("CreateVm: %v", err)
+	}
+
+	got, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm: %v", err)
+	}
+	t.Logf("① create 後の Notes = %q", got.Notes)
+	if got.Notes != multiline {
+		t.Fatalf("🔴 create で複数行 notes が失われている: got %q, want %q", got.Notes, multiline)
+	}
+
+	// update でも同じこと。
+	const updated = "one\ntwo\nthree\nfour"
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		updated, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm: %v", err)
+	}
+	after, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (after): %v", err)
+	}
+	t.Logf("② update 後の Notes = %q", after.Notes)
+	if after.Notes != updated {
+		t.Fatalf("🔴 update で複数行 notes が失われている: got %q, want %q", after.Notes, updated)
+	}
+	// --- CRLF の round-trip ---
+	//
+	// Windows のテキストは CRLF が標準で、Hyper-V マネージャーで手入力した notes も
+	// CRLF になる。go-wsman は CR を文字参照 (&#xD;) にエスケープして送るが、
+	// **読み戻しで CR が保持されるかは WinRM の応答形式次第** (Go の XML デコーダは
+	// 生の \r を \n へ正規化し、文字参照の CR は保持する)。
+	// 崩れる場合は「送信 CRLF → 読み戻し LF」で恒常 diff になるため実機に問う。
+	const crlf = "one\r\ntwo\r\nthree"
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		crlf, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm (CRLF): %v", err)
+	}
+	gotCRLF, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (CRLF): %v", err)
+	}
+	t.Logf("③ CRLF 送信後の Notes = %q", gotCRLF.Notes)
+	// 設計判断: Hyper-V は CR を保持しないので **送信側で LF へ正規化**し、
+	// config 側の CRLF は schema の DiffSuppressFunc が吸収する。
+	// したがって読み戻しは LF になるのが正しい。
+	const wantLF = "one\ntwo\nthree"
+	if gotCRLF.Notes != wantLF {
+		t.Fatalf("🔴 got %q, want %q (送信時に LF へ正規化されるはず)", gotCRLF.Notes, wantLF)
+	}
+	if !api.DiffSuppressNotes("notes", gotCRLF.Notes, crlf, nil) {
+		t.Errorf("🔴 config の CRLF と state の LF が差分扱いになる。恒常 diff になる")
+	}
+	t.Logf("🎯 CRLF は LF へ正規化され、DiffSuppress が config 側の CRLF を吸収する")
+
+	// --- 末尾改行 (HCL の heredoc 相当) ---
+	//
+	// `<<-EOT ... EOT` は末尾に改行が付く。Hyper-V が末尾をトリムすると
+	// state と config が食い違い、DiffSuppress では吸収できない (行数が変わるため)。
+	// 実機で「トリムされない」ことを確認済みだが、退行を検出できるよう固定する。
+	const trailing = "line1\nline2\n"
+	if err := cc.UpdateVm(ctx, vmName,
+		api.CriticalErrorAction_Pause, 30,
+		api.StartAction_Nothing, 0,
+		api.StopAction_Save,
+		api.CheckpointType_Production,
+		false, false, 536870912,
+		api.OnOffState_Off, 134217728,
+		memByt, memByt, memByt,
+		trailing, 1,
+		defaultVMPath, defaultVMPath, true, true,
+	); err != nil {
+		t.Fatalf("UpdateVm (末尾改行): %v", err)
+	}
+	gotTrailing, err := cc.GetVm(ctx, vmName)
+	if err != nil {
+		t.Fatalf("GetVm (末尾改行): %v", err)
+	}
+	t.Logf("④ 末尾改行つき送信後の Notes = %q", gotTrailing.Notes)
+	// 設計判断: 末尾改行は CIM 読み取りで落ちるので送信側で除去し、
+	// config 側の末尾改行は DiffSuppress が吸収する。
+	const wantTrimmed = "line1\nline2"
+	if gotTrailing.Notes != wantTrimmed {
+		t.Fatalf("🔴 got %q, want %q (送信時に末尾改行が除去されるはず)", gotTrailing.Notes, wantTrimmed)
+	}
+	if !api.DiffSuppressNotes("notes", gotTrailing.Notes, trailing, nil) {
+		t.Errorf("🔴 heredoc の末尾改行が差分扱いになる。恒常 diff になる")
+	}
+	t.Logf("🎯 末尾改行は除去され、DiffSuppress が config 側の末尾改行を吸収する")
+
+	t.Logf("🎯 判定: 複数行 notes が create / update とも round-trip する")
+}

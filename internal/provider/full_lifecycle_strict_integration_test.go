@@ -124,6 +124,42 @@ func TestRealHostFullLifecycleStrictPS0(t *testing.T) {
 		fw.BootOrders, fw.EnableSecureBoot, fw.SecureBootTemplate,
 		fw.PreferredNetworkBootProtocol, fw.ConsoleMode, fw.PauseAfterBootFailure))
 
+	// --- 5b. Firmware: **要求 BootOrders が空** の書き込み (#99 の陽性証明、#118) ---
+	//
+	// 上の leg は read で解決した **非空** の BootOrders を書き戻すため、#99 の
+	// 発火条件だった「要求値=空」の経路を一度も通らない。だからこそ #99 は
+	// 本テストで検出されず実運用で見つかった。
+	//
+	// config に vm_firmware を書かない Gen2 create はまさにこの形 (ExpandVmFirmwares の
+	// 既定値 = BootOrders 空) になる。空要求を「指定なし」として扱い PS へ委譲しない、
+	// という #99 の修正がここで初めて陽性証明される。
+	//
+	// 副次的に、create 時の実機既定値と schema 既定値の一致 (特に ConsoleMode /
+	// PauseAfterBootFailure) も同時に証明できる。要求が既定値と食い違っていれば
+	// firmwareZeroDowngrade が発火して PS 委譲になり mustNoPS が落ちる。
+	// config に vm_firmware が無いときに ExpandVmFirmwares が組み立てる既定値
+	// (api/vm_firmware.go の len(expandedVmFirmwares) < 1 分岐)。
+	// ResourceData が要るためここでは直接呼べないので同じ値を構成する。
+	d := api.VmFirmware{
+		BootOrders:                   []api.Gen2BootOrder{},
+		EnableSecureBoot:             api.OnOffState_On,
+		SecureBootTemplate:           "MicrosoftWindows",
+		PreferredNetworkBootProtocol: api.IPProtocolPreference_IPv4,
+		ConsoleMode:                  api.ConsoleModeType_Default,
+		PauseAfterBootFailure:        api.OnOffState_Off,
+	}
+	mustNoPS("CreateOrUpdateVmFirmware(空 BootOrders)", cc.CreateOrUpdateVmFirmware(ctx, vmName,
+		d.BootOrders, d.EnableSecureBoot, d.SecureBootTemplate,
+		d.PreferredNetworkBootProtocol, d.ConsoleMode, d.PauseAfterBootFailure))
+
+	// 空要求で既存のブート順が壊されていないこと (「指定なし」であって「消す」ではない)。
+	fwAfter, err := cc.GetVmFirmware(ctx, vmName)
+	mustNoPS("GetVmFirmware(空要求の後)", err)
+	if len(fwAfter.BootOrders) != len(fw.BootOrders) {
+		t.Errorf("空 BootOrders 要求でブート順が変わった: %d 件 → %d 件。"+
+			"空は「指定なし」であって「消す」ではない (#99)", len(fw.BootOrders), len(fwAfter.BootOrders))
+	}
+
 	// --- 6. Read 経路 (refresh/plan 相当) ---
 	_, err = cc.GetVmNetworkAdapters(ctx, vmName, nil)
 	mustNoPS("GetVmNetworkAdapters", err)

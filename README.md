@@ -144,18 +144,27 @@ output で参照している場合は表示が変わる。
 - Gen2 VM で、**OS を入れていない**こと(入れると firmware read が PowerShell に落ちる)
 - NIC がスイッチに接続されていないこと(go-wsman [#114](https://github.com/r4sd/go-wsman/issues/114) の既知バグ)
 - `wait_for_ips = false`
-- `automatic_checkpoints_enabled` がホストの既定と一致していること
-  (クライアント Hyper-V の既定は `true`。schema 既定の `false` にすると PowerShell へ委譲される)
-- `static_memory = false` (動的メモリ)。`true` は create 時点で PowerShell へ委譲される
-- `high_memory_mapped_io_space` / `low_memory_mapped_io_space` /
-  `automatic_critical_error_action_timeout` が実機既定 (512MB / 128MB / 30 分) と一致していること
+- `high_memory_mapped_io_space` / `low_memory_mapped_io_space` が非ゼロであること
+  (`0` は「ゼロ値への変更要求」ではなく無効値。schema 既定の 512MB / 128MB なら問題ない)
 - プロセッサとファームウェアが既定値のまま
 
-つまり現時点では**使い捨ての検証用 VM でのみ成立する**。実運用の構成では PowerShell が動く。
+**以前ここに並んでいた次の制約は解消した**(go-wsman のポインタフィールド
+[#135](https://github.com/r4sd/go-wsman/issues/135) /
+[#149](https://github.com/r4sd/go-wsman/issues/149) と datetime タグ
+[#119](https://github.com/r4sd/go-wsman/issues/119) による)。
 
-「非ゼロ→0」「true→false」の要求は CIM のペイロードに乗らないため、**create の時点で
-PowerShell に委譲して正しい VM を作る**(黙って別物を作らない)。根本解は
-go-wsman [#135](https://github.com/r4sd/go-wsman/issues/135)。
+| 以前の制約 | 現在 |
+|---|---|
+| `automatic_checkpoints_enabled` はホスト既定と一致が必要 | ✅ `false` を明示的に送れる |
+| `static_memory = false` (動的メモリ) のみ | ✅ `static_memory = true` で作れる |
+| `automatic_critical_error_action_timeout` は 30 分固定 | ✅ 任意の値を書ける |
+| `automatic_start_delay` は 0 固定 | ✅ 任意の値を書ける |
+
+実機の strict テストは `static_memory = true` / `automatic_checkpoints_enabled = false` /
+`timeout = 45` / `delay = 90`(いずれもホスト既定と異なる)で PowerShell 0 件を確認している。
+
+残る「非ゼロ→0」「true→false」の要求のうち CIM のペイロードに乗らないものは、
+**create の時点で PowerShell に委譲して正しい VM を作る**(黙って別物を作らない)。
 
 移行の方式と判断の経緯は [`docs/adr/`](docs/adr/README.md) を参照。
 

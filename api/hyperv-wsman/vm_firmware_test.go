@@ -77,7 +77,7 @@ func TestSecureBootTemplateNameToGUID(t *testing.T) {
 
 func TestFirmwareFromSystemSettingData(t *testing.T) {
 	settings := &hyperv.Msvm_VirtualSystemSettingData{
-		SecureBoot:                   true,
+		SecureBoot:                   boolPtr(true),
 		SecureBootTemplateId:         secureBootTemplateMicrosoftWindowsGUID,
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv6,
 		ConsoleMode:                  hyperv.ConsoleModeCOM1,
@@ -103,7 +103,7 @@ func TestFirmwareFromSystemSettingData(t *testing.T) {
 // PauseAfterBootFailure=false (ゼロ値側) の変換を検証する。
 func TestFirmwareFromSystemSettingData_Defaults(t *testing.T) {
 	settings := &hyperv.Msvm_VirtualSystemSettingData{
-		SecureBoot:                   false,
+		SecureBoot:                   boolPtr(false),
 		SecureBootTemplateId:         "",
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
 		ConsoleMode:                  hyperv.ConsoleModeDefault,

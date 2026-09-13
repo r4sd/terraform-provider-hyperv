@@ -88,14 +88,13 @@ func TestRealHostCreateZeroDowngrade(t *testing.T) {
 	t.Logf("🎯 判定: create 時のゼロ値が実際に反映される")
 }
 
-// TestRealHostCreateIntervalDelegates は create 時の interval 要求が PS 補正で反映されることを
-// 検証する (#133 の create 側)。
+// TestRealHostCreateIntervalViaCIM は create 時の interval 要求が反映されることを検証する (#133)。
 //
 // AutomaticStartupActionDelay / AutomaticCriticalErrorActionTimeout は go-wsman の marshaler が
 // datetime 型を送れないため CIM では書けない (go-wsman #119)。ゼロ値ではないので
 // vmLevelZeroDowngrade では検知できず、create 側に専用のガードが要る。
 // 無いと「成功したのに実機は既定値」= 恒常 diff になり、次の apply で VM が停止する。
-func TestRealHostCreateIntervalDelegates(t *testing.T) {
+func TestRealHostCreateIntervalViaCIM(t *testing.T) {
 	if os.Getenv("HYPERV_TEST_ALLOW_MUTATION") == "" {
 		t.Skip("HYPERV_TEST_ALLOW_MUTATION 未設定（VM 作成を伴う破壊的テスト）")
 	}
@@ -147,5 +146,5 @@ func TestRealHostCreateIntervalDelegates(t *testing.T) {
 		t.Errorf("🔴 automatic_critical_error_action_timeout=%d で作ったのに %d になっている (#133)",
 			wantTmout, got.AutomaticCriticalErrorActionTimeout)
 	}
-	t.Logf("🎯 判定: create 時の interval 要求が PS 補正で反映される")
+	t.Logf("🎯 判定: create 時の interval 要求が CIM で反映される")
 }

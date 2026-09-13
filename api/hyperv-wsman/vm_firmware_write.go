@@ -80,7 +80,9 @@ func buildFirmwareCIMValues(
 func firmwareWriteNoop(current *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) bool {
 	bootOrderSame := len(want.bootSourceOrder) == 0 ||
 		stringSlicesEqual(normalizedBootSourceOrder(current.BootSourceOrder), normalizedBootSourceOrder(want.bootSourceOrder))
-	return current.SecureBoot == want.secureBoot &&
+	// go-wsman #149 でポインタ化。nil は「ホストが返さない」= false 相当として比較する。
+	curSecureBoot := current.SecureBoot != nil && *current.SecureBoot
+	return curSecureBoot == want.secureBoot &&
 		strings.EqualFold(current.SecureBootTemplateId, want.secureBootTemplateGUID) &&
 		current.NetworkBootPreferredProtocol == want.networkBootProtocol &&
 		current.ConsoleMode == want.consoleMode &&
@@ -111,8 +113,8 @@ func normalizedBootSourceOrder(refs []string) []string {
 // BootSourceOrder は対象外 (#99)。PS 版が空配列を no-change として扱う以上、空の要求値は
 // 「クリア要求」ではなく「指定なし」であり、送らないこと自体が PS とのパリティになる。
 func firmwareZeroDowngrade(current *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) bool {
-	return (current.SecureBoot && !want.secureBoot) ||
-		(current.PauseAfterBootFailure && !want.pauseAfterBootFailure) ||
+	// secureBoot は go-wsman #149 でポインタ化され明示的に false を送れるため対象外。
+	return (current.PauseAfterBootFailure && !want.pauseAfterBootFailure) ||
 		(current.ConsoleMode != hyperv.ConsoleModeDefault && want.consoleMode == hyperv.ConsoleModeDefault) ||
 		(current.SecureBootTemplateId != "" && want.secureBootTemplateGUID == "")
 }
@@ -121,7 +123,7 @@ func firmwareZeroDowngrade(current *hyperv.Msvm_VirtualSystemSettingData, want f
 // 最小インスタンス (UpdateVm に送る「変更箇所 + InstanceID」だけの instance、他フィールドは
 // ゼロ値のまま = 未指定として扱われる)。
 func applyFirmwareSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want firmwareCIMValues) {
-	sd.SecureBoot = want.secureBoot
+	sd.SecureBoot = &want.secureBoot
 	sd.SecureBootTemplateId = want.secureBootTemplateGUID
 	sd.NetworkBootPreferredProtocol = want.networkBootProtocol
 	sd.ConsoleMode = want.consoleMode

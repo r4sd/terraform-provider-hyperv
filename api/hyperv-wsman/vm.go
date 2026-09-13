@@ -19,12 +19,9 @@ import (
 // (PnDTnHnMnS)。WS-Management が CIM datetime interval をレスポンス側で xs:duration に
 // マッピングするための wire format と考えられる。
 //
-// 書き込み方向 (embedded instance) は未実装 (#102 参照)。CIM-XML の TYPE 属性が Go の
-// string kind から一律 "string" と推論され (go-wsman hyperv/embedded.go の cimTypeName)、
-// この MOF 上 datetime 型のプロパティを "string" 型として送ると DefineSystem が
-// ErrorCode=32768 (Exception) で失敗することを実機確認済み。ISO 8601 / CIM ネイティブ形式
-// (ddddddddHHMMSS.mmmmmm:000) いずれの文字列内容でも同一エラーになるため、原因は文字列書式
-// ではなく TYPE 属性側。go-wsman 側に datetime 型を明示できる仕組み (cim タグ拡張等) が要る。
+// 書き込み方向は go-wsman #119 で解決済み。cim タグの datetime 指定で TYPE="datetime" を送り、
+// 値も CIM ネイティブ書式 (ddddddddHHMMSS.mmmmmm:000) へ変換される。provider 側は read と同じ
+// ISO 8601 で渡せばよい (applyVmLevelSettings 参照)。
 var intervalISO8601Pattern = regexp.MustCompile(`^P(\d+)DT(\d+)H(\d+)M(\d+)S$`)
 
 // parseIntervalTotalSeconds は datetime(interval) 型の文字列 (ISO 8601 形式、上記パターン参照)
@@ -157,8 +154,11 @@ func (c *ClientConfig) GetVm(ctx context.Context, name string) (api.Vm, error) {
 // MemoryMinimumBytes=Reservation / MemoryMaximumBytes=Limit (いずれも CIM は MB、api は byte)。
 // static memory でも Reservation/Limit は CIM 上 VirtualQuantity と同値で返る (Hyper-V の実装)。
 func applyMemoryToVm(vm *api.Vm, mem *hyperv.Msvm_MemorySettingData) {
-	vm.DynamicMemory = mem.DynamicMemoryEnabled
-	vm.StaticMemory = !mem.DynamicMemoryEnabled
+	// go-wsman #149 でポインタ化。応答に含まれないホストでは nil なので
+	// 「動的でない」= static 扱いに倒す (PS 版の既定と同じ向き)。
+	dynamic := mem.DynamicMemoryEnabled != nil && *mem.DynamicMemoryEnabled
+	vm.DynamicMemory = dynamic
+	vm.StaticMemory = !dynamic
 	vm.MemoryStartupBytes = mbToBytes(mem.VirtualQuantity)
 	vm.MemoryMinimumBytes = mbToBytes(mem.Reservation)
 	vm.MemoryMaximumBytes = mbToBytes(mem.Limit)
@@ -228,7 +228,9 @@ func vmFromSettingData(name string, sd *hyperv.Msvm_VirtualSystemSettingData) (a
 		// 一致する定義のため直接変換 (#106、MOF 一次資料確認済み)。write は #125 で実装済み。
 		CheckpointType: checkpointType,
 		// #134: 未マッピングだったため read が常に false を返していた。
-		AutomaticCheckpointsEnabled: sd.AutomaticSnapshotsEnabled,
+		// go-wsman #135 でポインタ化。Win10/2016+ のプロパティなので、返さないホストでは
+		// nil になる。そのまま deref すると panic するため既定 false に倒す。
+		AutomaticCheckpointsEnabled: sd.AutomaticSnapshotsEnabled != nil && *sd.AutomaticSnapshotsEnabled,
 		// #133: 未マッピングで read が常に 0 だった。書き込みは CIM 不可 (下記) だが、
 		// read が嘘をつくと「差分は出るが一度もエラーにならない」永久ループになる。
 		AutomaticStartDelay: startDelay,
@@ -404,7 +406,8 @@ func (c *ClientConfig) CreateVm(
 		automaticCriticalErrorAction, automaticStartAction, automaticStopAction,
 		guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect,
 		lowMemoryMappedIoSpace, notes, smartPagingFilePath, snapshotFileLocation,
-		checkpointType, automaticCheckpointsEnabled)
+		checkpointType, automaticCheckpointsEnabled,
+		automaticStartDelay, automaticCriticalErrorActionTimeout)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVm %q: %w", name, err)
 	}
@@ -463,33 +466,22 @@ func (c *ClientConfig) CreateVm(
 	// DefineSystem / SetMemorySettings は marshalEmbeddedInstance がゼロ値を送らないため、
 	// false / 0 を要求してもホスト既定が残る。例:
 	//
-	//	static_memory = true                  → DynamicMemoryEnabled はホスト既定 (true) のまま
-	//	automatic_checkpoints_enabled = false → ホスト既定 (クライアント Hyper-V は true) のまま
 	//	automatic_critical_error_action = None → CIM 既定 (Pause) のまま
+	//	lock_on_disconnect = Off               → ホスト既定のまま
 	//
 	// UpdateVm は同じ問題を vmLevelZeroDowngrade で検知して PS へ委譲しているが、
 	// create 側にはガードが無く **黙って違う構成の VM ができていた**。
 	//
 	// 作成後に読み直し、要求とのズレが残っていれば PS で補正する。ここで直さないと
 	// 次の apply まで嘘の構成が残り、しかもその apply は VM 停止を伴う。
-	// 根本解は go-wsman #135 (明示的にゼロ値を送る手段)。
+	//
+	// static_memory / automatic_checkpoints_enabled / secure_boot は go-wsman #135 / #149 で
+	// ポインタ化され、明示的に false を送れるようになったのでここでは拾わない。
 	cur, err := c.WsmanClient.GetSystemSettingData(ctx, guid)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVm %q: 補正のための読み直し: %w", name, err)
 	}
-	curMem, err := c.WsmanClient.GetMemorySettings(ctx, guid)
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVm %q: 補正のためのメモリ読み直し: %w", name, err)
-	}
-	// interval 2 件 (go-wsman #119 で書けない) の要求も同じ補正に乗せる (#133)。
-	// create 直後はホスト既定 (delay=0 / timeout=30) が入っているため、それ以外を
-	// 要求していたら PS で補正しないと恒常 diff になる。
-	unwritable, err := cimUnwritableIntervals(cur,
-		startDelaySeconds(automaticStartDelay), criticalErrorTimeoutMinutes(automaticCriticalErrorActionTimeout))
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVm %q: %w", name, err)
-	}
-	if unwritable || vmLevelZeroDowngrade(cur, curMem, vmLevelWant{
+	if vmLevelZeroDowngrade(cur, vmLevelWant{
 		criticalErrorAction:         automaticCriticalErrorAction,
 		startAction:                 automaticStartAction,
 		stopAction:                  automaticStopAction,
@@ -505,11 +497,7 @@ func (c *ClientConfig) CreateVm(
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
 	}) {
 		// ユーザーが「なぜ PS が走ったか」を通常ログで追えるよう INFO で出す。
-		if unwritable {
-			log.Printf("[INFO][hyperv-wsman] CreateVm %q: CIM で書けない interval の要求を検出、PS で補正します", name)
-		} else {
-			log.Printf("[INFO][hyperv-wsman] CreateVm %q: ゼロ値が反映されていないため PS で補正します", name)
-		}
+		log.Printf("[INFO][hyperv-wsman] CreateVm %q: ゼロ値が反映されていないため PS で補正します", name)
 		if err := c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
 			automaticStartAction, automaticStartDelay, automaticStopAction,
@@ -534,13 +522,11 @@ func (c *ClientConfig) CreateVm(
 // CIM の ModifySystemSettings はゼロ値フィールドを「変更なし」とみなすため、各フィールドは
 // 新しい値で上書きする (CreateVm と enum/メモリ変換ロジックを共有)。
 //
-// 未適用: automaticStartDelay (CreateVm と同じ理由、#102 スコープ外)。
-//
 // checkpointType は CIM の UserSnapshotType として書き込む (#125)。有効値が 2..5 で
 // ゼロ値が無いため marshalEmbeddedInstance のゼロ値スキップに掛からない (実機確認)。
-// automaticCheckpointsEnabled は true なら書けるが false はゼロ値のため送れないので、
-// true→false は下記のゼロ値ダウングレード判定が拾って PS へ委譲する
-// (根本解は go-wsman #135 の「明示的にゼロ値を送る手段」)。
+// automaticCheckpointsEnabled は go-wsman #135 でポインタ化され、false も明示的に送れる。
+// automaticStartDelay / automaticCriticalErrorActionTimeout は go-wsman #119 で書けるように
+// なった (cim タグの datetime 指定)。
 //
 // 非ゼロ→0 / true→false のダウングレードは marshalEmbeddedInstance がゼロ値を送らないため
 // CIM で表現できない。vmLevelZeroDowngrade で検知し、書き込み前に PS 経路へ丸ごと委譲する
@@ -608,19 +594,12 @@ func (c *ClientConfig) UpdateVm(
 		staticMemory:                staticMemory,
 		checkpointType:              checkpointType,
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
+		// go-wsman #119 で CIM 書き込みが可能になったので want に載せる。
+		automaticStartDelay:                 automaticStartDelay,
+		automaticCriticalErrorActionTimeout: automaticCriticalErrorActionTimeout,
 	}
-	// CIM で書けない interval フィールドの変更も PS へ委譲する (#133)。
-	unwritable, err := cimUnwritableIntervals(cur,
-		startDelaySeconds(automaticStartDelay), criticalErrorTimeoutMinutes(automaticCriticalErrorActionTimeout))
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: UpdateVm %q: %w", name, err)
-	}
-	if vmLevelZeroDowngrade(cur, mem, want) || unwritable {
-		if unwritable {
-			log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: CIM で書けない interval の変更を検出、PS へ委譲します", name)
-		} else {
-			log.Printf("[DEBUG][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
-		}
+	if vmLevelZeroDowngrade(cur, want) {
+		log.Printf("[INFO][hyperv-wsman] UpdateVm %q: ゼロ値ダウングレードを検出、PS へ委譲します", name)
 		return c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
 			automaticStartAction, automaticStartDelay, automaticStopAction,
@@ -704,10 +683,13 @@ func bytesToMB(b int64) uint64 {
 func applyMemorySettings(m *hyperv.Msvm_MemorySettingData, staticMemory, dynamicMemory bool, startupBytes, minBytes, maxBytes int64) {
 	m.VirtualQuantity = bytesToMB(startupBytes)
 	if staticMemory {
-		m.DynamicMemoryEnabled = false
+		// go-wsman #149 で明示的に false を送れるようになった。以前はゼロ値スキップで
+		// 黙殺され、static 要求なのに動的メモリの VM ができていた (#143)。
+		off := false
+		m.DynamicMemoryEnabled = &off
 		return
 	}
-	m.DynamicMemoryEnabled = dynamicMemory
+	m.DynamicMemoryEnabled = &dynamicMemory
 	if dynamicMemory {
 		m.Reservation = bytesToMB(minBytes)
 		m.Limit = bytesToMB(maxBytes)
@@ -731,6 +713,8 @@ func vmSettingDataForCreate(
 	notes, smartPagingFilePath, snapshotFileLocation string,
 	checkpointType api.CheckpointType,
 	automaticCheckpointsEnabled bool,
+	automaticStartDelay int32,
+	automaticCriticalErrorActionTimeout int32,
 ) (*hyperv.Msvm_VirtualSystemSettingData, error) {
 	subType, err := vmSubTypeFromGeneration(generation)
 	if err != nil {
@@ -754,6 +738,10 @@ func vmSettingDataForCreate(
 		snapshotFileLocation:        snapshotFileLocation,
 		checkpointType:              checkpointType,
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
+		// go-wsman #119 で CIM 書き込みが可能になったので create でも載せる。
+		// 以前は create 直後にホスト既定が入り、要求値との差で PS 補正が走っていた。
+		automaticStartDelay:                 automaticStartDelay,
+		automaticCriticalErrorActionTimeout: automaticCriticalErrorActionTimeout,
 	}); err != nil {
 		return nil, err
 	}
@@ -780,49 +768,26 @@ type vmLevelWant struct {
 	staticMemory         bool
 	// checkpoint 系。UserSnapshotType は有効値が 2..5 でゼロ値が無いため
 	// marshalEmbeddedInstance のゼロ値スキップに掛からず、そのまま送信できる (実機確認)。
-	// automaticCheckpointsEnabled は false がゼロ値のため送れず、true→false は PS 委譲になる
-	// (go-wsman #135 が根本解)。
+	// automaticCheckpointsEnabled は go-wsman #135 でポインタ化され、false も明示的に送れる。
 	checkpointType              api.CheckpointType
 	automaticCheckpointsEnabled bool
+	// interval 2 件。go-wsman #119 (cim タグの datetime 指定 + ISO 8601 → CIM ネイティブ変換)
+	// が入るまで CIM では書けず PS へ委譲していた。
+	automaticStartDelay                 int32 // 秒
+	automaticCriticalErrorActionTimeout int32 // 分
 }
 
-// cimUnwritableIntervals は現行 go-wsman で書き込めない datetime(interval) フィールドの
-// 変更を検知する。
-//
-// AutomaticStartupActionDelay と AutomaticCriticalErrorActionTimeout はどちらも
-// ModifySystemSettings が ErrorCode=32768 で拒否する (実機確認、2026-09-11)。
-// ISO 8601 / CIM ネイティブのどちらの書式でも同じエラーになるため、原因は文字列の中身ではなく
-// **go-wsman の marshaler が datetime 型を TYPE="string" で送ること** にある
-// (go-wsman #119。intervalISO8601Pattern のコメント参照)。
-// #119 が解消すれば CIM で書けるようになり、この委譲は不要になる。
-//
-// 検知したら PS へ委譲する。黙って捨てると read が実値を返すので恒常 diff になり、
-// これらは hasChangesThatRequireVmToBeOff に含まれるため apply のたびに VM が停止する。
-//
-// cur が nil (VM 未取得) なら判断材料が無いので false を返す。パース不能は呼び出し元へ
-// エラーを返す (GetVm も同じ入力で hard fail するため、到達するのは異常系のみ)。
-//
-// 引数は named type にしてある。両方 int32 だと取り違えても
-// コンパイルが通り、既定 config (delay=0 / timeout=30) では「常に PS 委譲」という
-// PS-0 を壊す方向の変異になるが、実機テストは「委譲が起きた」しか見ないので素通りする。
-// 単体テストでは原理的に検出できないため型で塞ぐ。
-type startDelaySeconds int32
-
-type criticalErrorTimeoutMinutes int32
-
-func cimUnwritableIntervals(cur *hyperv.Msvm_VirtualSystemSettingData, wantStartDelay startDelaySeconds, wantTimeout criticalErrorTimeoutMinutes) (bool, error) {
-	if cur == nil {
-		return false, nil
+// secondsToISO8601Interval は秒を go-wsman が受け取る ISO 8601 duration へ変換する。
+// go-wsman 側が書き込み時に CIM ネイティブ書式へ再変換する (read も同じ ISO 8601 を返す)。
+// 引数は int64。分→秒の換算 (timeout * 60) を int32 で行うと 35,791,394 分超で
+// 桁溢れして負数になり、黙って 0 を書いてしまう (schema に上限バリデーションが無い)。
+func secondsToISO8601Interval(sec int64) string {
+	if sec < 0 {
+		sec = 0
 	}
-	curDelay, err := parseIntervalSeconds(cur.AutomaticStartupActionDelay)
-	if err != nil {
-		return false, fmt.Errorf("AutomaticStartupActionDelay: %w", err)
-	}
-	curTimeout, err := parseIntervalMinutes(cur.AutomaticCriticalErrorActionTimeout)
-	if err != nil {
-		return false, fmt.Errorf("AutomaticCriticalErrorActionTimeout: %w", err)
-	}
-	return wantStartDelay != startDelaySeconds(curDelay) || wantTimeout != criticalErrorTimeoutMinutes(curTimeout), nil
+	d := sec / 86400
+	rem := sec % 86400
+	return fmt.Sprintf("P%dDT%dH%dM%dS", d, rem/3600, (rem%3600)/60, rem%60)
 }
 
 // vmLevelZeroDowngrade は要求が現行に対して「非ゼロ→0」または「true→false」の遷移を含むかを返す。
@@ -835,7 +800,7 @@ func cimUnwritableIntervals(cur *hyperv.Msvm_VirtualSystemSettingData, wantStart
 //
 // notes / smartPagingFilePath / snapshotFileLocation は applyVmLevelSettings が
 // 空文字を明示的にスキップするため、値の消去も同じく反映されない。
-func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyperv.Msvm_MemorySettingData, want vmLevelWant) bool {
+func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, want vmLevelWant) bool {
 	if cur == nil {
 		// 現行が読めない場合は判定できないので安全側 (PS 委譲) に倒す。
 		return true
@@ -867,15 +832,7 @@ func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyp
 	// schema 既定も非空 (C:\ProgramData\Microsoft\Windows\Hyper-V) のため resource 層から
 	// 空が来ることは無い。加えて委譲先の Set-VM 自体が空文字を受け付けず
 	// ParameterArgumentValidationError になる (実機確認) ので、委譲しても救えない。
-	// automatic_checkpoints_enabled の true→false も false がゼロ値のため送れない。
-	if !want.automaticCheckpointsEnabled && cur.AutomaticSnapshotsEnabled {
-		return true
-	}
-	// applyMemorySettings は staticMemory 時に DynamicMemoryEnabled=false を代入するが、
-	// これもゼロ値のため送られない。動的→静的の切り替えは PS でしか表現できない。
-	if want.staticMemory && curMem != nil && curMem.DynamicMemoryEnabled {
-		return true
-	}
+
 	return false
 }
 
@@ -885,8 +842,8 @@ func vmLevelZeroDowngrade(cur *hyperv.Msvm_VirtualSystemSettingData, curMem *hyp
 // marshalEmbeddedInstance が省略するため、Update (ModifySystemSettings) では「未指定=変更なし」
 // になる (CIM SettingData の慣習)。InstanceID 等の既存値は呼び出し側が保持する。
 //
-// AutomaticCriticalErrorActionTimeout の書き込みは未実装 (#102、intervalISO8601Pattern の
-// コメント参照)。
+// interval 2 件 (AutomaticStartupActionDelay / AutomaticCriticalErrorActionTimeout) は
+// go-wsman #119 で書けるようになった。read と同じ ISO 8601 で渡す。
 func applyVmLevelSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want vmLevelWant) error {
 	sd.AutomaticStartupAction = enumToUint16(int(want.startAction))
 	sd.AutomaticShutdownAction = enumToUint16(int(want.stopAction))
@@ -898,6 +855,12 @@ func applyVmLevelSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want vmLevel
 	// ErrorCode=32773「無効な値」で CreateVm/UpdateVm を拒否する (#105)。
 	sd.HighMmioGapSize = bytesToMbU64(want.highMmioGapSize)
 	sd.LowMmioGapSize = bytesToMbU64(uint64(want.lowMmioGapSize))
+	// interval 2 件は go-wsman #119 で書けるようになった (cim タグの datetime 指定)。
+	// 値は read と同じ ISO 8601 で渡す。CIM ネイティブ書式への変換は go-wsman 側が行う。
+	// ゼロ値 (delay=0) は marshalEmbeddedInstance のゼロ値スキップに掛からない
+	// ("P0DT0H0M0S" は空文字ではないため)。
+	sd.AutomaticStartupActionDelay = secondsToISO8601Interval(int64(want.automaticStartDelay))
+	sd.AutomaticCriticalErrorActionTimeout = secondsToISO8601Interval(int64(want.automaticCriticalErrorActionTimeout) * 60)
 	if want.snapshotFileLocation != "" {
 		sd.SnapshotDataRoot = want.snapshotFileLocation
 	}
@@ -933,8 +896,8 @@ func applyVmLevelSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want vmLevel
 		}
 		sd.UserSnapshotType = ust
 	}
-	// automatic_checkpoints_enabled。true は送れるが false はゼロ値のため落ちる。
-	// true→false は vmLevelZeroDowngrade が拾って PS へ委譲する。
-	sd.AutomaticSnapshotsEnabled = want.automaticCheckpointsEnabled
+	// automatic_checkpoints_enabled は go-wsman #135 でポインタ化。ホスト既定 true / schema 既定 false なので
+	// 「毎回明示的に送る」のが正しい (以前は false が黙殺されていた)。
+	sd.AutomaticSnapshotsEnabled = &want.automaticCheckpointsEnabled
 	return nil
 }

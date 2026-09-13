@@ -765,7 +765,25 @@ func applyVmLevelSettings(sd *hyperv.Msvm_VirtualSystemSettingData, want vmLevel
 		sd.SwapFileDataRoot = want.smartPagingFilePath
 	}
 	if want.notes != "" {
-		sd.Notes = strings.Split(want.notes, "\n")
+		// Notes は MOF 上 string[] だが Hyper-V は実質単一値で、**複数要素を送ると
+		// 先頭以外が捨てられる** (実機確認)。改行を含む 1 要素で送るのが正しい。
+		// PowerShell の Set-VM -Notes が 1 つの文字列を取る仕様と整合する (#145)。
+		//
+		//	送信 []string{"a","b","c"}   → 読み戻し ["a"]        🔴
+		//	送信 []string{"a\nb\nc"}     → 読み戻し ["a\nb\nc"]  ✅
+		//
+		// read 側 (vmFromSettingData) は strings.Join(sd.Notes, "\n") なので、
+		// 1 要素なら Join は恒等になり round-trip が成立する。
+		//
+		// あわせて改行を LF へ正規化する。**Hyper-V 自体は CR を保持する**
+		// (PS で書いて PS で読むとバイト列に 13,10 が残ることを実機確認) が、
+		// **CIM 読み取り経路が CR を落とす** (WinRM が生 CR を返し、Go の XML
+		// デコーダが LF へ正規化する)。
+		//
+		// そのまま送ると「ホストは CRLF・state は LF」と read が実態とズレる。
+		// 送る側で LF に揃えることで read が正直になる。config 側の CRLF は
+		// schema の DiffSuppressFunc が吸収するので plan は安定する。
+		sd.Notes = []string{api.NormalizeNotes(want.notes)}
 	}
 	// checkpoint_type (#125)。ゼロ値は「未指定」なので送らない。
 	if want.checkpointType != 0 {

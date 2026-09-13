@@ -224,6 +224,13 @@ func (c *ClientConfig) GetVmNetworkAdapters(ctx context.Context, vmName string, 
 //
 // PowerShell 経路は作成順 (= config 順) を返すため、CIM 経路でだけ発現する差だった。
 // config に無い NIC (外部で追加されたもの) は落とさず、辞書順のまま末尾に置く。
+//
+// ⚠️ configOrder の実体は「config」ではなく **直前 apply 時点の state** である。
+// SDK v2 の Read (refresh) では `d.Get` が prior state を返すため。
+// 作成/更新直後の Read では planned (= config 順) なので state は config 順で確定し、
+// 以降の refresh はその順へ寄せて不動点になる。一方 **config で NIC を並べ替えた直後**と
+// **import 直後** (state 空 → 辞書順) は 1 回だけ「停止 → 差分なし → 収束」が走る。
+// #135 の無限ループは解消しているが、完全な no-op ではない点に注意。
 func sortAdaptersByConfigOrder(adapters []api.VmNetworkAdapter, configOrder []api.VmNetworkAdapterWaitForIp) []api.VmNetworkAdapter {
 	if len(configOrder) == 0 || len(adapters) == 0 {
 		return adapters

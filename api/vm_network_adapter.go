@@ -332,6 +332,11 @@ type VmNetworkAdapter struct {
 	IpAddresses                            []string
 }
 
+// ExpandVmNetworkAdapterWaitForIps は network_adaptors から wait_for_ips 設定を取り出す。
+//
+// 🔴 戻り値の **並び順は契約** である。CIM 経路の read (sortAdaptersByConfigOrder) が
+// network_adaptors (TypeList = 位置で差分) の順序をこれに合わせるため、ここで
+// map を経由したりソートしたりすると #135 の恒常 diff が再発する。
 func ExpandVmNetworkAdapterWaitForIps(d *schema.ResourceData) ([]VmNetworkAdapterWaitForIp, uint32, uint32, error) {
 	expandVmNetworkAdapterWaitForIps := make([]VmNetworkAdapterWaitForIp, 0)
 	conv := NewIntConverter()

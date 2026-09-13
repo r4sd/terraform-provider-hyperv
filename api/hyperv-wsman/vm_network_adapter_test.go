@@ -319,6 +319,13 @@ func TestSortAdaptersByConfigOrder(t *testing.T) {
 		eq(t, got, "Internal", "External")
 	})
 
+	t.Run("3 件の回転も全件が config 順になる", func(t *testing.T) {
+		// 2 件の入れ替えだけだと「先頭しか反映しない」実装や
+		// 削除で index がずれる実装を区別できない。
+		got := sortAdaptersByConfigOrder(mk("A", "B", "C"), cfg("B", "C", "A"))
+		eq(t, got, "B", "C", "A")
+	})
+
 	t.Run("config に無い NIC は末尾に辞書順で残す", func(t *testing.T) {
 		// 外部で足された NIC を落とすと state から消えてしまう。
 		got := sortAdaptersByConfigOrder(mk("Alpha", "External", "Internal"), cfg("Internal"))

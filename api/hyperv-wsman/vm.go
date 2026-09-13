@@ -481,7 +481,15 @@ func (c *ClientConfig) CreateVm(
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVm %q: 補正のためのメモリ読み直し: %w", name, err)
 	}
-	if vmLevelZeroDowngrade(cur, curMem, vmLevelWant{
+	// interval 2 件 (go-wsman #119 で書けない) の要求も同じ補正に乗せる (#133)。
+	// create 直後はホスト既定 (delay=0 / timeout=30) が入っているため、それ以外を
+	// 要求していたら PS で補正しないと恒常 diff になる。
+	unwritable, err := cimUnwritableIntervals(cur,
+		startDelaySeconds(automaticStartDelay), criticalErrorTimeoutMinutes(automaticCriticalErrorActionTimeout))
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: %w", name, err)
+	}
+	if unwritable || vmLevelZeroDowngrade(cur, curMem, vmLevelWant{
 		criticalErrorAction:         automaticCriticalErrorAction,
 		startAction:                 automaticStartAction,
 		stopAction:                  automaticStopAction,
@@ -497,7 +505,11 @@ func (c *ClientConfig) CreateVm(
 		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
 	}) {
 		// ユーザーが「なぜ PS が走ったか」を通常ログで追えるよう INFO で出す。
-		log.Printf("[INFO][hyperv-wsman] CreateVm %q: ゼロ値が反映されていないため PS で補正します", name)
+		if unwritable {
+			log.Printf("[INFO][hyperv-wsman] CreateVm %q: CIM で書けない interval の要求を検出、PS で補正します", name)
+		} else {
+			log.Printf("[INFO][hyperv-wsman] CreateVm %q: ゼロ値が反映されていないため PS で補正します", name)
+		}
 		if err := c.ClientConfig.UpdateVm(ctx, name,
 			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
 			automaticStartAction, automaticStartDelay, automaticStopAction,

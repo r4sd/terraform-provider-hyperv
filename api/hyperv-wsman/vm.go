@@ -363,9 +363,9 @@ func needsTurnOff(state uint16) bool {
 // (実際に生成されるかは Phase D 実機で確認)。
 //
 // 未適用:
-//   - automaticStartDelay: CIM Duration 文字列のエンコードが要るが go-wsman の CIM 構造体に
-//     未マッピング (#102 のスコープ外、homelab config も未使用で実害なし)。
-//   - checkpointType / automaticCheckpointsEnabled: v2.1 (#46) に延期。
+//   - automaticStartDelay / automaticCriticalErrorActionTimeout: go-wsman の marshaler が
+//     datetime 型を TYPE="string" で送るため ModifySystemSettings が ErrorCode=32768 で
+//     拒否する (go-wsman #119)。read は実装済みで、変更要求は PS へ委譲する (#133)。
 func (c *ClientConfig) CreateVm(
 	ctx context.Context,
 	name string,
@@ -456,6 +456,58 @@ func (c *ClientConfig) CreateVm(
 		return fmt.Errorf("hyperv-wsman: CreateVm %q: set processor: %w", name, err)
 	} else if err := c.WsmanClient.WaitForJob(ctx, jobRef); err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVm %q: wait processor: %w", name, err)
+	}
+
+	// 6. ゼロ値ダウングレードの補正 (#143 / #141)。
+	//
+	// DefineSystem / SetMemorySettings は marshalEmbeddedInstance がゼロ値を送らないため、
+	// false / 0 を要求してもホスト既定が残る。例:
+	//
+	//	static_memory = true                  → DynamicMemoryEnabled はホスト既定 (true) のまま
+	//	automatic_checkpoints_enabled = false → ホスト既定 (クライアント Hyper-V は true) のまま
+	//	automatic_critical_error_action = None → CIM 既定 (Pause) のまま
+	//
+	// UpdateVm は同じ問題を vmLevelZeroDowngrade で検知して PS へ委譲しているが、
+	// create 側にはガードが無く **黙って違う構成の VM ができていた**。
+	//
+	// 作成後に読み直し、要求とのズレが残っていれば PS で補正する。ここで直さないと
+	// 次の apply まで嘘の構成が残り、しかもその apply は VM 停止を伴う。
+	// 根本解は go-wsman #135 (明示的にゼロ値を送る手段)。
+	cur, err := c.WsmanClient.GetSystemSettingData(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: 補正のための読み直し: %w", name, err)
+	}
+	curMem, err := c.WsmanClient.GetMemorySettings(ctx, guid)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVm %q: 補正のためのメモリ読み直し: %w", name, err)
+	}
+	if vmLevelZeroDowngrade(cur, curMem, vmLevelWant{
+		criticalErrorAction:         automaticCriticalErrorAction,
+		startAction:                 automaticStartAction,
+		stopAction:                  automaticStopAction,
+		guestControlledCacheTypes:   guestControlledCacheTypes,
+		highMmioGapSize:             highMemoryMappedIoSpace,
+		lockOnDisconnect:            lockOnDisconnect,
+		lowMmioGapSize:              lowMemoryMappedIoSpace,
+		notes:                       notes,
+		smartPagingFilePath:         smartPagingFilePath,
+		snapshotFileLocation:        snapshotFileLocation,
+		staticMemory:                staticMemory,
+		checkpointType:              checkpointType,
+		automaticCheckpointsEnabled: automaticCheckpointsEnabled,
+	}) {
+		// ユーザーが「なぜ PS が走ったか」を通常ログで追えるよう INFO で出す。
+		log.Printf("[INFO][hyperv-wsman] CreateVm %q: ゼロ値が反映されていないため PS で補正します", name)
+		if err := c.ClientConfig.UpdateVm(ctx, name,
+			automaticCriticalErrorAction, automaticCriticalErrorActionTimeout,
+			automaticStartAction, automaticStartDelay, automaticStopAction,
+			checkpointType, dynamicMemory, guestControlledCacheTypes,
+			highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace,
+			memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes,
+			notes, processorCount, smartPagingFilePath, snapshotFileLocation,
+			staticMemory, automaticCheckpointsEnabled); err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateVm %q: ゼロ値の補正: %w", name, err)
+		}
 	}
 
 	return nil

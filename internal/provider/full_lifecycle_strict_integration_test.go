@@ -62,6 +62,9 @@ func TestRealHostFullLifecycleStrictPS0(t *testing.T) {
 	const (
 		vmName = "tf-wsman-full-lifecycle-test"
 		memByt = 536870912
+		// schema 既定 (resource_hyperv_machine_instance.go)。実機のホスト既定と一致する。
+		highMmioDefault = 536870912
+		lowMmioDefault  = 134217728
 	)
 	// strict でない普通の ClientConfig で前回残骸を掃除 (DeleteVm 自体は shadow 済みなので不要だが、
 	// cleanup 経路のエラーを strict カウンタに混ぜないため専用インスタンスを使う)。
@@ -74,17 +77,24 @@ func TestRealHostFullLifecycleStrictPS0(t *testing.T) {
 	})
 
 	// --- 1. Create (Gen2) ---
+	// 引数はすべて **ホスト既定と一致する値** を渡す必要がある。CreateVm は作成後に再読し、
+	// ゼロ値ダウングレード (非ゼロ→0 / true→false) を検知すると PS へ委譲するため (#141)。
+	// go-wsman #135 (ポインタフィールド) が解消するまではこの制約が残る。
+	//
+	//	MMIO      : 0 は「送らない」= ホスト既定 512MB/128MB になるので schema 既定を渡す
+	//	timeout   : 実機既定は 30 分
+	//	staticMemory / automaticCheckpointsEnabled: 実機既定は dynamic / true
 	mustNoPS("CreateVm", cc.CreateVm(ctx, vmName,
 		"", 2,
-		api.CriticalErrorAction_Pause, 0,
+		api.CriticalErrorAction_Pause, 30,
 		api.StartAction_Nothing, 0,
 		api.StopAction_Save,
 		api.CheckpointType_Production,
-		false, false, 0,
-		api.OnOffState_Off, 0,
+		true, false, highMmioDefault,
+		api.OnOffState_Off, lowMmioDefault,
 		memByt, memByt, memByt,
 		"full-lifecycle-test", 1,
-		"", "", true, false,
+		"", "", false, true,
 	))
 
 	vm, err := cc.GetVm(ctx, vmName)

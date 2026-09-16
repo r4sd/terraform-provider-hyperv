@@ -19,7 +19,7 @@ func TestBuildFirmwareCIMValues(t *testing.T) {
 	}
 	want := firmwareCIMValues{
 		secureBoot:             true,
-		secureBootTemplateGUID: secureBootTemplateMicrosoftWindowsGUID,
+		secureBootTemplateGUID: api.SecureBootTemplateMicrosoftWindowsGUID,
 		networkBootProtocol:    hyperv.NetworkBootPreferredProtocolIPv6,
 		consoleMode:            uint16(api.ConsoleModeType_Com1),
 		pauseAfterBootFailure:  true,
@@ -42,7 +42,7 @@ func TestBuildFirmwareCIMValues_UnknownTemplate(t *testing.T) {
 func TestFirmwareWriteNoop(t *testing.T) {
 	current := &hyperv.Msvm_VirtualSystemSettingData{
 		SecureBoot:                   boolPtr(true),
-		SecureBootTemplateId:         secureBootTemplateMicrosoftWindowsGUID,
+		SecureBootTemplateId:         api.SecureBootTemplateMicrosoftWindowsGUID,
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
 		ConsoleMode:                  hyperv.ConsoleModeDefault,
 		PauseAfterBootFailure:        false,
@@ -50,7 +50,7 @@ func TestFirmwareWriteNoop(t *testing.T) {
 	}
 	same := firmwareCIMValues{
 		secureBoot:             true,
-		secureBootTemplateGUID: secureBootTemplateMicrosoftWindowsGUID,
+		secureBootTemplateGUID: api.SecureBootTemplateMicrosoftWindowsGUID,
 		networkBootProtocol:    hyperv.NetworkBootPreferredProtocolIPv4,
 		consoleMode:            hyperv.ConsoleModeDefault,
 		pauseAfterBootFailure:  false,
@@ -72,12 +72,12 @@ func TestFirmwareWriteNoop(t *testing.T) {
 // 同一テンプレートを指す限り no-op と判定されることを検証する (#100 既知ギャップ 2)。
 func TestFirmwareWriteNoop_SecureBootTemplateIdCaseInsensitive(t *testing.T) {
 	current := &hyperv.Msvm_VirtualSystemSettingData{
-		SecureBootTemplateId:         strings.ToLower(secureBootTemplateMicrosoftWindowsGUID),
+		SecureBootTemplateId:         strings.ToLower(api.SecureBootTemplateMicrosoftWindowsGUID),
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv4,
 		ConsoleMode:                  hyperv.ConsoleModeDefault,
 	}
 	want := firmwareCIMValues{
-		secureBootTemplateGUID: secureBootTemplateMicrosoftWindowsGUID,
+		secureBootTemplateGUID: api.SecureBootTemplateMicrosoftWindowsGUID,
 		networkBootProtocol:    hyperv.NetworkBootPreferredProtocolIPv4,
 		consoleMode:            hyperv.ConsoleModeDefault,
 	}
@@ -202,7 +202,7 @@ func TestFirmwareZeroDowngrade(t *testing.T) {
 		},
 		{
 			name:          "SecureBootTemplateId 非空→空 は非表現",
-			current:       &hyperv.Msvm_VirtualSystemSettingData{SecureBootTemplateId: secureBootTemplateMicrosoftWindowsGUID},
+			current:       &hyperv.Msvm_VirtualSystemSettingData{SecureBootTemplateId: api.SecureBootTemplateMicrosoftWindowsGUID},
 			want:          firmwareCIMValues{secureBootTemplateGUID: ""},
 			wantDowngrade: true,
 		},
@@ -236,7 +236,7 @@ func TestApplyFirmwareSettings_RoundTrip(t *testing.T) {
 	sd := &hyperv.Msvm_VirtualSystemSettingData{InstanceID: "keep-me"}
 	want := firmwareCIMValues{
 		secureBoot:             true,
-		secureBootTemplateGUID: secureBootTemplateMicrosoftWindowsGUID,
+		secureBootTemplateGUID: api.SecureBootTemplateMicrosoftWindowsGUID,
 		networkBootProtocol:    hyperv.NetworkBootPreferredProtocolIPv6,
 		consoleMode:            hyperv.ConsoleModeCOM2,
 		pauseAfterBootFailure:  true,

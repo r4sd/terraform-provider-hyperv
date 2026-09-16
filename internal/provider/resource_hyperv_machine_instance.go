@@ -996,10 +996,14 @@ func resourceHyperVMachineInstance() *schema.Resource {
 						},
 
 						"secure_boot_template": {
-							Type:        schema.TypeString,
-							Optional:    true,
-							Default:     "MicrosoftWindows",
-							Description: "Specifies the name of the secure boot template. If secure boot is enabled, you must have a valid secure boot template for the guest operating system to start. Example values to use are `MicrosoftWindows`,`MicrosoftUEFICertificateAuthority`, `OpenSourceShieldedVM`.",
+							Type:     schema.TypeString,
+							Optional: true,
+							Default:  "MicrosoftWindows",
+							// Read は必ず正規のシンボリック名を state に書く。config 側に小文字表記や
+							// GUID を書いた環境では state と一致せず恒常 diff になるため、同じテンプレート
+							// を指す別表記は差分として扱わない (#119)。未知の値は抑止しない。
+							DiffSuppressFunc: api.DiffSuppressSecureBootTemplate,
+							Description:      "Specifies the name of the secure boot template. If secure boot is enabled, you must have a valid secure boot template for the guest operating system to start. Example values to use are `MicrosoftWindows`,`MicrosoftUEFICertificateAuthority`, `OpenSourceShieldedVM`. The symbolic name and its GUID are treated as the same value, and comparison is case-insensitive.",
 						},
 
 						"preferred_network_boot_protocol": {

@@ -372,7 +372,7 @@ Optional:
 - `enable_secure_boot` (String) Specifies whether to enable secure boot. Valid values to use are `On`, `Off`.
 - `pause_after_boot_failure` (String) Specifies the behavior of the virtual machine after a start failure. For a value of On, if the virtual machine fails to start correctly from a device, the virtual machine is paused. Valid values to use are `On`, `Off`.
 - `preferred_network_boot_protocol` (String) Specifies the IP protocol version to use during a network boot. Valid values to use are `IPv4`, `IPv6`.
-- `secure_boot_template` (String) Specifies the name of the secure boot template. If secure boot is enabled, you must have a valid secure boot template for the guest operating system to start. Example values to use are `MicrosoftWindows`,`MicrosoftUEFICertificateAuthority`, `OpenSourceShieldedVM`.
+- `secure_boot_template` (String) Specifies the name of the secure boot template. If secure boot is enabled, you must have a valid secure boot template for the guest operating system to start. Example values to use are `MicrosoftWindows`,`MicrosoftUEFICertificateAuthority`, `OpenSourceShieldedVM`. The symbolic name and its GUID are treated as the same value, and comparison is case-insensitive.
 
 <a id="nestedblock--vm_firmware--boot_order"></a>
 ### Nested Schema for `vm_firmware.boot_order`

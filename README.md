@@ -138,8 +138,9 @@ output で参照している場合は表示が変わる。
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
 
 `integration_services` のキーは、非英語ホストで PS 経路と CIM 経路の state が食い違う。
-**CIM 経路の書き込みは英語名しか受理しない**(`hyperv.IntegrationServiceComponent` の固定 6 種)
-一方、PS の `Enable-VMIntegrationService -Name` はローカライズ名で照合する。
+**CIM 経路の書き込みは英語名しか受理しない**(`hyperv.IntegrationServiceComponent` の固定 6 種)。
+一方 PS の `Enable-VMIntegrationService -Name` はローカライズ名で照合すると**思われる**
+(この挙動は本リポジトリの実機では未確認)。
 日本語ホストで PS 経路を使い、config のキーも日本語で書いていた場合、
 `HYPERV_USE_WSMAN=1` に切り替えると **config のキーを英語に書き換える必要がある**
 (state は refresh で英語に入れ替わるが、config 側は入れ替わらない)。
@@ -149,7 +150,7 @@ DHCP 予約、MAC に紐づくライセンスやクラスタ membership)を壊�
 (名前, スイッチ, MAC)で同一視し、キーが変わる NIC を **detach + attach** で置き換えるため、
 `dynamic_mac_address = true` の NIC には新しい MAC が割り当てられる。
 作り直しの引き金になるのは `name` / `switch_name` の変更のほか、
-`dynamic_mac_address` の切り替えと `static_mac_address` の変更。
+`dynamic_mac_address` の切り替えと(`dynamic_mac_address = false` のときの)`static_mac_address` の変更。
 VLAN や帯域(`vlan_access` / `vlan_id` / `maximum_bandwidth` 等)は CIM 経路が未対応で
 そもそも apply が通らない(上の A 表の側の話になる)。
 
@@ -167,9 +168,11 @@ network_adaptors {
 }
 ```
 
-`dynamic_mac_address` の既定は `true` で、`static_mac_address` だけを書いても
+`dynamic_mac_address` の既定は `true` で、**CIM 経路では** `static_mac_address` だけを書いても
 **MAC は送られず、NIC の同一性も `dynamic` のまま**になる。さらに read が
-`static_mac_address` に空を返すので恒常 diff になり、apply のたびに VM が停止する。
+`static_mac_address` に空を返すので恒常 diff になり、apply のたびに VM が停止する
+([#160](https://github.com/r4sd/terraform-provider-hyperv/issues/160))。
+PS 経路は `dynamic_mac_address` を見ずに `-StaticMacAddress` を適用するので、この差は CIM 経路固有。
 
 ### PowerShell 0 件で通る条件
 

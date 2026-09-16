@@ -10,33 +10,14 @@ import (
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
-// Secure Boot テンプレートの固定識別子(全 Hyper-V 環境で共通、秘密情報ではない)。
-// 実機で `Set-VMFirmware -SecureBootTemplate <名前>` を実行し、CIM 側の
-// Msvm_VirtualSystemSettingData.SecureBootTemplateId を読んで対応を確認した(2026-08-01、#100)。
-// PS が受け付けるシンボリック名はこの 3 種で、Windows ゲストは MicrosoftWindows、
-// Linux ゲストは MicrosoftUEFICertificateAuthority を使うのが一般的。
-const (
-	secureBootTemplateMicrosoftWindowsGUID     = "1734C6E8-3154-4DDA-BA5F-A874CC483422"
-	secureBootTemplateMicrosoftUEFICAGUID      = "272E7447-90A4-4563-A4B9-8E4AB00526CE"
-	secureBootTemplateOpenSourceShieldedVMGUID = "4292AE2B-EE2C-42B5-A969-DD8F8689F6F3"
-)
-
-// secureBootTemplateGUIDToName は Msvm_VirtualSystemSettingData.SecureBootTemplateId (実 GUID) から
-// PS の -SecureBootTemplate が受け付けるシンボリック名への逆引き表。未知の GUID は
-// secureBootTemplateIdToName が GUID 文字列のままフォールバックする。
-var secureBootTemplateGUIDToName = map[string]string{
-	secureBootTemplateMicrosoftWindowsGUID:     "MicrosoftWindows",
-	secureBootTemplateMicrosoftUEFICAGUID:      "MicrosoftUEFICertificateAuthority",
-	secureBootTemplateOpenSourceShieldedVMGUID: "OpenSourceShieldedVM",
-}
+// Secure Boot テンプレートの GUID ↔ シンボリック名の表は api パッケージが持つ
+// (schema の DiffSuppress と CIM 経路で同じ表を使う。#119)。
 
 // secureBootTemplateIdToName は既知の GUID ならシンボリック名を、未知/空なら入力をそのまま返す。
 // GUID の大文字小文字表記はホストによって揺れうる (#100) ため EqualFold で照合する。
 func secureBootTemplateIdToName(guid string) string {
-	for g, n := range secureBootTemplateGUIDToName {
-		if strings.EqualFold(g, guid) {
-			return n
-		}
+	if name, known := api.CanonicalSecureBootTemplate(guid); known {
+		return name
 	}
 	return guid
 }
@@ -51,7 +32,7 @@ func secureBootTemplateNameToGUID(name string) (guid string, ok bool) {
 	if name == "" {
 		return "", true
 	}
-	for g, n := range secureBootTemplateGUIDToName {
+	for g, n := range api.SecureBootTemplateGUIDToName {
 		if strings.EqualFold(g, name) {
 			return name, true // 既知 GUID の入力: 表記をそのまま保つ
 		}

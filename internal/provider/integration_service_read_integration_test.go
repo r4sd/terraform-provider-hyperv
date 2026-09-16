@@ -8,7 +8,7 @@ package provider
 // provider 層の GetVmIntegrationServices を「VM 表示名」で呼び、無条件 PS を解消した go-wsman
 // 経路 (resolveVMGUID→ListIntegrationServices) が:
 //   - fault なく統合サービス状態を返す
-//   - 表示名が PowerShell Get-VMIntegrationService.Name と一致する既知集合に収まる
+//   - 名前がロケール非依存の英語 6 種に収まる (#98。ローカライズされるホストでも同じ)
 // ことを非破壊で確認する (既存 VM への読み取りのみ、状態は変更しない)。
 //
 // 実行例:
@@ -53,15 +53,16 @@ func TestRealHostIntegrationServicesReadWsman(t *testing.T) {
 	if len(svcs) == 0 {
 		t.Errorf("統合サービスが 0 件 (前提崩れの可能性)")
 	}
-	// 表示名 (ElementName) は PS Name と同一だがホスト OS 言語にローカライズされる。英語ホストでは
-	// 下記集合に収まる。非英語ホストでは別言語になるため「未知の名前」は失敗ではなく情報ログに留める。
+	// #98 以降、Name は ElementName (ローカライズされる) ではなく go-wsman の Component
+	// (ロケール非依存) を写したもの。ホスト言語に関わらず下記 6 種に収まるので、外れたら失敗。
+	// この homelab は日本語ロケールなので、ここが緑なら正規化が効いている陽性証明になる。
 	knownEnglish := map[string]bool{
 		"Heartbeat": true, "Key-Value Pair Exchange": true, "Shutdown": true,
 		"Time Synchronization": true, "VSS": true, "Guest Service Interface": true,
 	}
 	for _, s := range svcs {
 		if !knownEnglish[s.Name] {
-			t.Logf("注記: 統合サービス表示名 %q は英語既知集合に含まれない (ローカライズホストの可能性)", s.Name)
+			t.Errorf("統合サービス名 %q がロケール非依存の英語 6 種に含まれない (正規化漏れ)", s.Name)
 		}
 	}
 }

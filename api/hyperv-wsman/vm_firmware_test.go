@@ -34,9 +34,9 @@ func TestSecureBootTemplateIdToName(t *testing.T) {
 		id   string
 		want string
 	}{
-		{"MicrosoftWindows (実機確認済み)", secureBootTemplateMicrosoftWindowsGUID, "MicrosoftWindows"},
-		{"MicrosoftUEFICertificateAuthority (実機確認済み)", secureBootTemplateMicrosoftUEFICAGUID, "MicrosoftUEFICertificateAuthority"},
-		{"OpenSourceShieldedVM (実機確認済み)", secureBootTemplateOpenSourceShieldedVMGUID, "OpenSourceShieldedVM"},
+		{"MicrosoftWindows (実機確認済み)", api.SecureBootTemplateMicrosoftWindowsGUID, "MicrosoftWindows"},
+		{"MicrosoftUEFICertificateAuthority (実機確認済み)", api.SecureBootTemplateMicrosoftUEFICAGUID, "MicrosoftUEFICertificateAuthority"},
+		{"OpenSourceShieldedVM (実機確認済み)", api.SecureBootTemplateOpenSourceShieldedVMGUID, "OpenSourceShieldedVM"},
 		{"未知のGUIDはそのまま返す", "00000000-0000-0000-0000-000000000000", "00000000-0000-0000-0000-000000000000"},
 		{"空文字はそのまま返す", "", ""},
 	}
@@ -57,12 +57,12 @@ func TestSecureBootTemplateNameToGUID(t *testing.T) {
 		wantOK   bool
 	}{
 		{"空文字は変更なし扱い", "", "", true},
-		{"既知のシンボル名", "MicrosoftWindows", secureBootTemplateMicrosoftWindowsGUID, true},
-		{"既知のシンボル名 (Linux 用 UEFI CA)", "MicrosoftUEFICertificateAuthority", secureBootTemplateMicrosoftUEFICAGUID, true},
-		{"既知のシンボル名 (Shielded VM)", "OpenSourceShieldedVM", secureBootTemplateOpenSourceShieldedVMGUID, true},
-		{"GUID形式の入力もそのまま通す", secureBootTemplateMicrosoftWindowsGUID, secureBootTemplateMicrosoftWindowsGUID, true},
-		{"既知GUIDの小文字表記も通す", strings.ToLower(secureBootTemplateMicrosoftUEFICAGUID), strings.ToLower(secureBootTemplateMicrosoftUEFICAGUID), true},
-		{"シンボル名の大文字小文字揺れも許容", "microsoftwindows", secureBootTemplateMicrosoftWindowsGUID, true},
+		{"既知のシンボル名", "MicrosoftWindows", api.SecureBootTemplateMicrosoftWindowsGUID, true},
+		{"既知のシンボル名 (Linux 用 UEFI CA)", "MicrosoftUEFICertificateAuthority", api.SecureBootTemplateMicrosoftUEFICAGUID, true},
+		{"既知のシンボル名 (Shielded VM)", "OpenSourceShieldedVM", api.SecureBootTemplateOpenSourceShieldedVMGUID, true},
+		{"GUID形式の入力もそのまま通す", api.SecureBootTemplateMicrosoftWindowsGUID, api.SecureBootTemplateMicrosoftWindowsGUID, true},
+		{"既知GUIDの小文字表記も通す", strings.ToLower(api.SecureBootTemplateMicrosoftUEFICAGUID), strings.ToLower(api.SecureBootTemplateMicrosoftUEFICAGUID), true},
+		{"シンボル名の大文字小文字揺れも許容", "microsoftwindows", api.SecureBootTemplateMicrosoftWindowsGUID, true},
 		{"未知のシンボル名はok=false", "SomeUnknownTemplate", "", false},
 	}
 	for _, tt := range tests {
@@ -78,7 +78,7 @@ func TestSecureBootTemplateNameToGUID(t *testing.T) {
 func TestFirmwareFromSystemSettingData(t *testing.T) {
 	settings := &hyperv.Msvm_VirtualSystemSettingData{
 		SecureBoot:                   boolPtr(true),
-		SecureBootTemplateId:         secureBootTemplateMicrosoftWindowsGUID,
+		SecureBootTemplateId:         api.SecureBootTemplateMicrosoftWindowsGUID,
 		NetworkBootPreferredProtocol: hyperv.NetworkBootPreferredProtocolIPv6,
 		ConsoleMode:                  hyperv.ConsoleModeCOM1,
 		PauseAfterBootFailure:        true,

@@ -128,7 +128,8 @@ update 経路は上記 A 表のガードで委譲するが、**create 経路に�
 | `hyperv_vm_checkpoint` の `creation_time` | ローカル時刻 + オフセット(`2026-09-10T01:20:31.4447620+09:00`) | UTC(`2026-09-09T16:20:31.444762Z`) |
 | 稼働中 VM の復元後の状態 | スナップショット時点の状態(Standard なら Running のまま) | 同左(PowerShell へ委譲するため) |
 | `integration_services` の state のキー | `Get-VMIntegrationService` の `Name` をそのまま使うため**ホスト OS 言語にローカライズされる** | 常に英語の 6 種([#98](https://github.com/r4sd/terraform-provider-hyperv/issues/98)) |
-| NIC の `name` / `switch_name` を変更した時の MAC | `Set-VMNetworkAdapter` による in-place 更新で MAC は変わらない | NIC を作り直すため、`dynamic_mac_address = true` の NIC は **MAC が変わる** |
+| NIC の同一性 | `Rename-VMNetworkAdapter` / `Connect-VMNetworkAdapter` で in-place 更新するため MAC は変わらない | (名前, スイッチ, MAC)が変わると **NIC を作り直す**([#153](https://github.com/r4sd/terraform-provider-hyperv/issues/153)) |
+| 動的 MAC の NIC の `static_mac_address` | 現在の MAC が state に入る | **空のまま**(CIM の read は静的 MAC のときしか値を返さない) |
 
 同じ瞬間を指すが文字列表現が異なる。`creation_time` は Computed なので plan の差分にはならないが、
 PowerShell 時代の state を `HYPERV_USE_WSMAN=1` で refresh すると state 上の値が書き換わる。
@@ -137,17 +138,38 @@ output で参照している場合は表示が変わる。
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
 
 `integration_services` のキーは、非英語ホストで PS 経路と CIM 経路の state が食い違う。
-config 側は英語名で書くのが前提(書き込みは英語名しか受理しない)なので、CIM 経路の方が
-config と一致する。PS 経路から切り替える時は refresh でキーが英語に入れ替わる。
+**CIM 経路の書き込みは英語名しか受理しない**(`hyperv.IntegrationServiceComponent` の固定 6 種)
+一方、PS の `Enable-VMIntegrationService -Name` はローカライズ名で照合する。
+日本語ホストで PS 経路を使い、config のキーも日本語で書いていた場合、
+`HYPERV_USE_WSMAN=1` に切り替えると **config のキーを英語に書き換える必要がある**
+(state は refresh で英語に入れ替わるが、config 側は入れ替わらない)。
 
-MAC が変わる件は、MAC で識別している構成(Talos の `machine.network.interfaces` の MAC マッチ、
+NIC を作り直す件は、MAC で識別している構成(Talos の `machine.network.interfaces` の MAC マッチ、
 DHCP 予約、MAC に紐づくライセンスやクラスタ membership)を壊す。CIM 経路は NIC を
-(名前, スイッチ, MAC)で同一視するため、名前かスイッチを変えると **detach + attach** になり、
-MAC を指定していない NIC には新しい動的 MAC が割り当てられる
-([#153](https://github.com/r4sd/terraform-provider-hyperv/issues/153))。
-VLAN や帯域だけを変える場合は NIC が作り直されないので該当しない。
+(名前, スイッチ, MAC)で同一視し、キーが変わる NIC を **detach + attach** で置き換えるため、
+`dynamic_mac_address = true` の NIC には新しい MAC が割り当てられる。
+作り直しの引き金になるのは `name` / `switch_name` の変更のほか、
+`dynamic_mac_address` の切り替えと `static_mac_address` の変更。
+VLAN や帯域(`vlan_access` / `vlan_id` / `maximum_bandwidth` 等)は CIM 経路が未対応で
+そもそも apply が通らない(上の A 表の側の話になる)。
 
-**回避策**: `static_mac_address` を明示する。MAC が同一性の一部になるので作り直されても値が変わらない。
+> ⚠️ **新しい MAC が割り当てられること自体は実機で未確認**(コードが detach + attach で
+> あることと、MAC を送るのが静的指定時だけであることまでを確認した段階)。
+
+**回避策**: `dynamic_mac_address = false` と `static_mac_address` を**両方**書く。
+
+```hcl
+network_adaptors {
+  name                = "eth0"
+  switch_name         = hyperv_network_switch.example.name
+  dynamic_mac_address = false            # これが無いと static_mac_address は黙って捨てられる
+  static_mac_address  = "00155d000101"
+}
+```
+
+`dynamic_mac_address` の既定は `true` で、`static_mac_address` だけを書いても
+**MAC は送られず、NIC の同一性も `dynamic` のまま**になる。さらに read が
+`static_mac_address` に空を返すので恒常 diff になり、apply のたびに VM が停止する。
 
 ### PowerShell 0 件で通る条件
 

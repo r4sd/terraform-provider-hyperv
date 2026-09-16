@@ -495,14 +495,14 @@ func resourceHyperVMachineInstance() *schema.Resource {
 							Type:        schema.TypeBool,
 							Optional:    true,
 							Default:     true,
-							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Note: with `HYPERV_USE_WSMAN=1`, changing the adapter's `name` or `switch_name` recreates the adapter, so a dynamically assigned MAC address changes. Set `static_mac_address` if the MAC address must remain stable.",
+							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Note: with `HYPERV_USE_WSMAN=1`, the adapter is recreated rather than updated in place whenever its `name`, `switch_name` or MAC address changes, so a dynamically assigned MAC address changes too. To keep the MAC address stable, set this to `false` and specify `static_mac_address`; setting `static_mac_address` alone has no effect because the MAC address is only sent when this is `false`.",
 						},
 						"static_mac_address": {
 							Type:             schema.TypeString,
 							Optional:         true,
 							Default:          "",
 							DiffSuppressFunc: api.DiffSuppressVmStaticMacAddress,
-							Description:      "Assigns a specific a MAC addresss to the virtual network adapter. Setting this also keeps the MAC address stable across adapter changes with `HYPERV_USE_WSMAN=1`, where the adapter is recreated rather than updated in place.",
+							Description:      "Assigns a specific a MAC addresss to the virtual network adapter. This value is only applied when `dynamic_mac_address` is `false`; otherwise it is ignored. With `HYPERV_USE_WSMAN=1` the adapter is recreated rather than updated in place, so setting both `dynamic_mac_address = false` and this value is what keeps the MAC address stable.",
 						},
 						"mac_address_spoofing": {
 							Type:             schema.TypeString,
@@ -1003,7 +1003,7 @@ func resourceHyperVMachineInstance() *schema.Resource {
 							// GUID を書いた環境では state と一致せず恒常 diff になるため、同じテンプレート
 							// を指す別表記は差分として扱わない (#119)。未知の値は抑止しない。
 							DiffSuppressFunc: api.DiffSuppressSecureBootTemplate,
-							Description:      "Specifies the name of the secure boot template. If secure boot is enabled, you must have a valid secure boot template for the guest operating system to start. Example values to use are `MicrosoftWindows`,`MicrosoftUEFICertificateAuthority`, `OpenSourceShieldedVM`. The symbolic name and its GUID are treated as the same value, and comparison is case-insensitive.",
+							Description:      "Specifies the name of the secure boot template. If secure boot is enabled, you must have a valid secure boot template for the guest operating system to start. Example values to use are `MicrosoftWindows`,`MicrosoftUEFICertificateAuthority`, `OpenSourceShieldedVM`. The symbolic name and its GUID are treated as the same value when planning, and comparison is case-insensitive. Note: writing a GUID instead of the symbolic name is only verified for the `HYPERV_USE_WSMAN=1` path; the PowerShell path passes the value to `Set-VMFirmware -SecureBootTemplate`, which expects the symbolic name.",
 						},
 
 						"preferred_network_boot_protocol": {

@@ -495,14 +495,14 @@ func resourceHyperVMachineInstance() *schema.Resource {
 							Type:        schema.TypeBool,
 							Optional:    true,
 							Default:     true,
-							Description: "Assigns a dynamically generated MAC address to the virtual network adapter.",
+							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Note: with `HYPERV_USE_WSMAN=1`, changing the adapter's `name` or `switch_name` recreates the adapter, so a dynamically assigned MAC address changes. Set `static_mac_address` if the MAC address must remain stable.",
 						},
 						"static_mac_address": {
 							Type:             schema.TypeString,
 							Optional:         true,
 							Default:          "",
 							DiffSuppressFunc: api.DiffSuppressVmStaticMacAddress,
-							Description:      "Assigns a specific a MAC addresss to the virtual network adapter.",
+							Description:      "Assigns a specific a MAC addresss to the virtual network adapter. Setting this also keeps the MAC address stable across adapter changes with `HYPERV_USE_WSMAN=1`, where the adapter is recreated rather than updated in place.",
 						},
 						"mac_address_spoofing": {
 							Type:             schema.TypeString,

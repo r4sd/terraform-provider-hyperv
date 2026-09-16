@@ -127,12 +127,22 @@ update 経路は上記 A 表のガードで委譲するが、**create 経路に�
 |------|-----------|-----|
 | `hyperv_vm_checkpoint` の `creation_time` | ローカル時刻 + オフセット(`2026-09-10T01:20:31.4447620+09:00`) | UTC(`2026-09-09T16:20:31.444762Z`) |
 | 稼働中 VM の復元後の状態 | スナップショット時点の状態(Standard なら Running のまま) | 同左(PowerShell へ委譲するため) |
+| NIC の `name` / `switch_name` を変更した時の MAC | `Set-VMNetworkAdapter` による in-place 更新で MAC は変わらない | NIC を作り直すため、`dynamic_mac_address = true` の NIC は **MAC が変わる** |
 
 同じ瞬間を指すが文字列表現が異なる。`creation_time` は Computed なので plan の差分にはならないが、
 PowerShell 時代の state を `HYPERV_USE_WSMAN=1` で refresh すると state 上の値が書き換わる。
 output で参照している場合は表示が変わる。
 
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
+
+MAC が変わる件は、MAC で識別している構成(Talos の `machine.network.interfaces` の MAC マッチ、
+DHCP 予約、MAC に紐づくライセンスやクラスタ membership)を壊す。CIM 経路は NIC を
+(名前, スイッチ, MAC)で同一視するため、名前かスイッチを変えると **detach + attach** になり、
+MAC を指定していない NIC には新しい動的 MAC が割り当てられる
+([#153](https://github.com/r4sd/terraform-provider-hyperv/issues/153))。
+VLAN や帯域だけを変える場合は NIC が作り直されないので該当しない。
+
+**回避策**: `static_mac_address` を明示する。MAC が同一性の一部になるので作り直されても値が変わらない。
 
 ### PowerShell 0 件で通る条件
 

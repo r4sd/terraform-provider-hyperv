@@ -127,6 +127,7 @@ update 経路は上記 A 表のガードで委譲するが、**create 経路に�
 |------|-----------|-----|
 | `hyperv_vm_checkpoint` の `creation_time` | ローカル時刻 + オフセット(`2026-09-10T01:20:31.4447620+09:00`) | UTC(`2026-09-09T16:20:31.444762Z`) |
 | 稼働中 VM の復元後の状態 | スナップショット時点の状態(Standard なら Running のまま) | 同左(PowerShell へ委譲するため) |
+| `integration_services` の state のキー | `Get-VMIntegrationService` の `Name` をそのまま使うため**ホスト OS 言語にローカライズされる** | 常に英語の 6 種([#98](https://github.com/r4sd/terraform-provider-hyperv/issues/98)) |
 | NIC の `name` / `switch_name` を変更した時の MAC | `Set-VMNetworkAdapter` による in-place 更新で MAC は変わらない | NIC を作り直すため、`dynamic_mac_address = true` の NIC は **MAC が変わる** |
 
 同じ瞬間を指すが文字列表現が異なる。`creation_time` は Computed なので plan の差分にはならないが、
@@ -134,6 +135,10 @@ PowerShell 時代の state を `HYPERV_USE_WSMAN=1` で refresh すると state 
 output で参照している場合は表示が変わる。
 
 **VLAN を使う構成などはここに該当する。** `HYPERV_USE_WSMAN=1` のままでは apply が通らない。
+
+`integration_services` のキーは、非英語ホストで PS 経路と CIM 経路の state が食い違う。
+config 側は英語名で書くのが前提(書き込みは英語名しか受理しない)なので、CIM 経路の方が
+config と一致する。PS 経路から切り替える時は refresh でキーが英語に入れ替わる。
 
 MAC が変わる件は、MAC で識別している構成(Talos の `machine.network.interfaces` の MAC マッチ、
 DHCP 予約、MAC に紐づくライセンスやクラスタ membership)を壊す。CIM 経路は NIC を

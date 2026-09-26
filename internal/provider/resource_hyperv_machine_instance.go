@@ -1141,18 +1141,26 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 
 	err = client.CreateVm(ctx, name, path, generation, automaticCriticalErrorAction, automaticCriticalErrorActionTimeout, automaticStartAction, automaticStartDelay, automaticStopAction, checkpointType, dynamicMemory, guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace, memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes, notes, processorCount, smartPagingFilePath, snapshotFileLocation, staticMemory, automaticCheckpointsEnabled)
 	if err != nil {
+		// CreateVm は VM を作った後にも失敗しうる (CIM 経路: DefineSystem 成功後の
+		// 自動生成 NIC 削除 / メモリ / CPU / ゼロ値補正の PS 委譲。PS 経路: New-Vm 後の
+		// Set-Vm 群)。その場合だけ ID を入れて実機の VM を state に紐付ける (#154)。
+		//
+		// 存在確認を挟むのは、DefineSystem 自体が失敗したケースで ID を入れると
+		// 存在しない VM が state に載り、次の apply の Delete が UpdateVmStatus →
+		// waitForStableVmState → ErrVMNotFound で落ちて詰むため。VmExists が
+		// エラーを返したときも入れない (残すか詰ませるかなら、残す方が復旧できる)。
+		if existing, existsErr := client.VmExists(ctx, name); existsErr != nil {
+			log.Printf("[WARN][hyperv][create] %s の残存確認に失敗したため state に紐付けません。実機に VM が残っている可能性があります: %+v", name, existsErr)
+		} else if existing.Exists {
+			d.SetId(name)
+		}
 		return diag.FromErr(err)
 	}
 
-	// ここで ID を入れるのは「作成完了の印」ではなく、**この先で失敗したときに実機の VM を
-	// state に紐付けて残すため** (#154)。SDK v2 の Resource.Apply はエラー時も
-	// ResourceData.State() を返すが、State() は ID が空だと nil を返す。つまり ID 未設定の
-	// まま return すると Terraform は何も記録できず、実機には VM だけが残って次の apply が
-	// VmExists で「already exists、import せよ」と止まる。
-	// ID さえ入っていれば tainted として記録され、次の apply が destroy→recreate する。
-	//
-	// この下の各サブリソース設定は PS 経路 / CIM 経路のどちらでも同じ関数を通るので、
-	// 両経路に等しく効く (巻き戻し案は wsman 側だけになり非対称だった)。
+	// ID を入れるのは「作成完了の印」ではなく、この先で失敗したときに実機の VM を
+	// state に紐付けて残すため (#154)。ID が空のままエラーで抜けると Terraform は
+	// state に何も記録できず、実機に VM だけが残って次の apply が VmExists で
+	// 「already exists、import せよ」と止まる。根拠は machine_instance_create_orphan_test.go。
 	d.SetId(name)
 
 	err = client.CreateOrUpdateVmProcessors(ctx, name, vmProcessors)

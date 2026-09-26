@@ -9,16 +9,31 @@ import (
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
-// orphanStubClient は「CreateVm は成功するが後続のサブリソース設定が失敗する」状況だけを
-// 再現する api.Client。埋め込みにしているので、ここで上書きしていないメソッドが呼ばれたら
-// nil ポインタで落ちる = 想定外の経路を通ったことがテスト失敗として現れる。
+// orphanStubClient は「実機に VM が残ったか」だけを操作できる api.Client。
+// 埋め込みにしているので、ここで上書きしていないメソッドが呼ばれたら nil ポインタで
+// 落ちる = 想定外の経路を通ったことがテスト失敗として現れる。
 type orphanStubClient struct {
 	api.Client
+
+	// createVmErr が非 nil なら CreateVm がそれを返す (CreateVm 内部での失敗を再現)。
+	createVmErr error
+	// vmExistsAfterCreate は CreateVm 呼び出し後の VmExists の応答。
+	// CreateVm が DefineSystem 成功後に失敗したケース (true) と、
+	// DefineSystem 自体が失敗したケース (false) を撃ち分ける。
+	vmExistsAfterCreate bool
+	// subresourceErr が非 nil なら最初のサブリソース設定がそれを返す。
+	subresourceErr error
+
 	createVmCalled bool
+	vmExistsCalls  int
 }
 
 func (c *orphanStubClient) VmExists(_ context.Context, _ string) (api.VmExists, error) {
-	return api.VmExists{Exists: false}, nil
+	c.vmExistsCalls++
+	if !c.createVmCalled {
+		return api.VmExists{Exists: false}, nil // Create 冒頭の重複チェック
+	}
+	return api.VmExists{Exists: c.vmExistsAfterCreate}, nil
 }
 
 func (c *orphanStubClient) CreateVm(
@@ -28,25 +43,15 @@ func (c *orphanStubClient) CreateVm(
 	_ int64, _ int64, _ int64, _ string, _ int64, _ string, _ string, _ bool, _ bool,
 ) error {
 	c.createVmCalled = true
-	return nil
+	return c.createVmErr
 }
 
-// CreateOrUpdateVmProcessors が CreateVm 直後の最初のサブリソース呼び出し。
-// ここで失敗させると、実機には VM が残るが Create はエラーで抜ける。
 func (c *orphanStubClient) CreateOrUpdateVmProcessors(_ context.Context, _ string, _ []api.VmProcessor) error {
-	return errors.New("シミュレートした失敗 (ゼロ値補正など)")
+	return c.subresourceErr
 }
 
-// TestMachineInstanceCreate_SetsIdBeforeSubresources は #154 の回帰テスト。
-//
-// SDK v2 の Resource.Apply は diags にエラーがあっても data.State() を返し、
-// ResourceData.State() は ID が空なら nil を返す。つまり CreateVm 成功後に
-// SetId しないままエラーを返すと、Terraform は何も記録できず**実機の VM だけが残る**
-// (次の apply は VmExists に引っかかって "already exists、import せよ" で停止)。
-//
-// ID さえ入っていれば tainted として記録され、次の apply が destroy→recreate する。
-// これは PS 経路 / CIM 経路のどちらでも同じ resource Create を通るため、両経路に効く。
-func TestMachineInstanceCreate_SetsIdBeforeSubresources(t *testing.T) {
+func newOrphanTestData(t *testing.T) *schema.ResourceData {
+	t.Helper()
 	r := resourceHyperVMachineInstance()
 	d := schema.TestResourceDataRaw(t, r.SchemaMap(), map[string]interface{}{
 		"name":                 "test-vm",
@@ -56,8 +61,61 @@ func TestMachineInstanceCreate_SetsIdBeforeSubresources(t *testing.T) {
 		"memory_startup_bytes": 536870912,
 	})
 	d.MarkNewResource()
+	return d
+}
 
-	client := &orphanStubClient{}
+// #154 の本体。CreateVm は DefineSystem 成功後にも失敗しうる (CIM 経路: 自動生成 NIC の
+// 削除 / メモリ / CPU / ゼロ値補正の PS 委譲、PS 経路: New-VM 後の Set-VM 群)。
+// このとき実機には VM が残るので、ID を入れて state に紐付けないと孤児になる。
+func TestMachineInstanceCreate_SetsIdWhenCreateVmFailsButVmExists(t *testing.T) {
+	d := newOrphanTestData(t)
+	client := &orphanStubClient{
+		createVmErr:         errors.New("シミュレートした失敗 (ゼロ値補正の PS 委譲)"),
+		vmExistsAfterCreate: true,
+	}
+
+	diags := resourceHyperVMachineInstanceCreate(context.Background(), d, api.Client(client))
+
+	if !diags.HasError() {
+		t.Fatalf("CreateVm が失敗したのにエラーが返っていない: %+v", diags)
+	}
+	if client.vmExistsCalls != 2 {
+		t.Fatalf("VmExists の呼び出しが %d 回。冒頭の重複チェックと失敗後の残存確認で 2 回のはず", client.vmExistsCalls)
+	}
+	if d.Id() == "" {
+		t.Errorf("CreateVm が VM を残して失敗したのに ID が空。" +
+			"SDK v2 はこの state を捨てるため実機の VM が孤児になる (#154)")
+	}
+}
+
+// 負の対照。DefineSystem 自体が失敗して実機に VM が無いときに ID を入れてはいけない。
+// 入れると state に存在しない VM が載り、次の apply の Delete が
+// UpdateVmStatus → waitForStableVmState → ErrVMNotFound で落ちて詰む。
+func TestMachineInstanceCreate_LeavesIdEmptyWhenVmWasNotCreated(t *testing.T) {
+	d := newOrphanTestData(t)
+	client := &orphanStubClient{
+		createVmErr:         errors.New("シミュレートした失敗 (DefineSystem 自体)"),
+		vmExistsAfterCreate: false,
+	}
+
+	diags := resourceHyperVMachineInstanceCreate(context.Background(), d, api.Client(client))
+
+	if !diags.HasError() {
+		t.Fatalf("CreateVm が失敗したのにエラーが返っていない: %+v", diags)
+	}
+	if d.Id() != "" {
+		t.Errorf("実機に VM が無いのに ID %q が入った。次の apply の Delete が詰む", d.Id())
+	}
+}
+
+// CreateVm 成功後のサブリソース設定で失敗した場合も、実機には VM が残るので ID が要る。
+// (#154 本文には無いが同じ性質の窓。PR #150 のレビュー指摘 3 に対応)
+func TestMachineInstanceCreate_SetsIdWhenSubresourceFails(t *testing.T) {
+	d := newOrphanTestData(t)
+	client := &orphanStubClient{
+		subresourceErr: errors.New("シミュレートした失敗 (processor 設定)"),
+	}
+
 	diags := resourceHyperVMachineInstanceCreate(context.Background(), d, api.Client(client))
 
 	if !client.createVmCalled {
@@ -67,7 +125,6 @@ func TestMachineInstanceCreate_SetsIdBeforeSubresources(t *testing.T) {
 		t.Fatalf("サブリソース失敗なのにエラーが返っていない: %+v", diags)
 	}
 	if d.Id() == "" {
-		t.Errorf("CreateVm 成功後にエラーで抜けたのに ID が空。" +
-			"SDK v2 はこの state を捨てるため実機の VM が孤児になる (#154)")
+		t.Errorf("CreateVm 成功後にエラーで抜けたのに ID が空 (#154)")
 	}
 }

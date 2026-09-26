@@ -1145,17 +1145,25 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		// 自動生成 NIC 削除 / メモリ / CPU / ゼロ値補正の PS 委譲。PS 経路: New-Vm 後の
 		// Set-Vm 群)。その場合だけ ID を入れて実機の VM を state に紐付ける (#154)。
 		//
-		// 存在確認を挟むのは、DefineSystem 自体が失敗したケースで ID を入れると
-		// 存在しない VM が state に載り、次の apply の Delete が詰むため。Delete は
-		// DeleteVm の前に UpdateVmStatus を呼び、不在の VM では両経路とも落ちる:
-		// CIM 経路は waitForStableVmState が ErrVMNotFound、PS 経路は
-		// updateVmStatusTemplate の `throw "VM does not exist"`。復旧に state rm が要る。
+		// 存在を確認できた場合と、確認そのものに失敗した場合は ID を入れる。
+		// 入れないのは「VM が無い」と確定したときだけ。
 		//
-		// VmExists がエラーを返したときも入れない。孤児が残る方は次の apply が
-		// 「import せよ」と案内を出して復旧できるので、迷ったら載せない側に倒す。
-		if existing, existsErr := client.VmExists(ctx, name); existsErr != nil {
-			log.Printf("[WARN][hyperv][create] %s の残存確認に失敗したため state に紐付けません。実機に VM が残っている可能性があります: %+v", name, existsErr)
-		} else if existing.Exists {
+		// 不在が確定しているのに載せると、`-refresh=false` で apply したときに
+		// Delete が落ちる。Delete は DeleteVm の前に UpdateVmStatus を呼び、
+		// 不在の VM では両経路とも失敗する (CIM: waitForStableVmState が
+		// ErrVMNotFound / PS: updateVmStatusTemplate の `throw "VM does not exist"`)。
+		// この場合は state rm が要る。既定の refresh が走る限りは Read の不在分岐が
+		// state から外すので、ここは狭い窓。
+		//
+		// 逆に確認に失敗したときは載せる側に倒す。VM が実在すれば tainted で
+		// 自動 replace、実在しなければ次の refresh の Read が state から外して
+		// 自動 create になる。載せないと VM が実在した場合に孤児が残り、
+		// 「import せよ」で止まって必ず手作業になる。
+		existing, existsErr := client.VmExists(ctx, name)
+		if existsErr != nil {
+			log.Printf("[WARN][hyperv][create] %s の残存確認に失敗しました。VM が残っている可能性があるため state に紐付けます: %+v", name, existsErr)
+		}
+		if existsErr != nil || existing.Exists {
 			d.SetId(name)
 		}
 		return diag.FromErr(err)

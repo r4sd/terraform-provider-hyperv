@@ -37,14 +37,16 @@ type orphanStubClient struct {
 	subresourceErr error
 
 	createVmCalled bool
-	vmExistsCalls  int
+	// vmExistsCheckedAfterCreate は CreateVm 後に残存確認が走ったか。回数ではなく
+	// 「その経路を通ったか」を見る (冒頭の重複チェックの有無に結合させないため)。
+	vmExistsCheckedAfterCreate bool
 }
 
 func (c *orphanStubClient) VmExists(_ context.Context, _ string) (api.VmExists, error) {
-	c.vmExistsCalls++
 	if !c.createVmCalled {
 		return api.VmExists{Exists: false}, nil // Create 冒頭の重複チェック
 	}
+	c.vmExistsCheckedAfterCreate = true
 	if c.vmExistsErrAfterCreate != nil {
 		return api.VmExists{}, c.vmExistsErrAfterCreate
 	}
@@ -94,18 +96,21 @@ func TestMachineInstanceCreate_SetsIdWhenCreateVmFailsButVmExists(t *testing.T) 
 	if !diags.HasError() {
 		t.Fatalf("CreateVm が失敗したのにエラーが返っていない: %+v", diags)
 	}
-	if client.vmExistsCalls != 2 {
-		t.Fatalf("VmExists の呼び出しが %d 回。冒頭の重複チェックと失敗後の残存確認で 2 回のはず", client.vmExistsCalls)
+	if !client.vmExistsCheckedAfterCreate {
+		t.Fatalf("CreateVm 失敗後の残存確認が走っていない")
 	}
-	if d.Id() == "" {
-		t.Errorf("CreateVm が VM を残して失敗したのに ID が空。" +
-			"SDK v2 はこの state を捨てるため実機の VM が孤児になる (#154)")
+	if d.Id() != "test-vm" {
+		t.Errorf("ID が %q。CreateVm が VM を残して失敗したときは VM 名が入るべき。"+
+			"空だと state に何も記録されず実機の VM が孤児になる (#154)", d.Id())
 	}
 }
 
-// 負の対照。DefineSystem 自体が失敗して実機に VM が無いときに ID を入れてはいけない。
-// 入れると state に存在しない VM が載り、次の apply の Delete が
-// UpdateVmStatus → waitForStableVmState → ErrVMNotFound で落ちて詰む。
+// 負の対照。DefineSystem 自体が失敗して「実機に VM が無い」と確定したときは ID を入れない。
+//
+// 既定の refresh が走る限り、載せてしまっても Read の不在分岐が state から外すので
+// 自己修復する。効くのは `-refresh=false` で apply したときで、そのとき Delete が
+// UpdateVmStatus で落ちて state rm が要る。窓は狭いが、不在が分かっているものを
+// わざわざ載せる理由が無い。
 func TestMachineInstanceCreate_LeavesIdEmptyWhenVmWasNotCreated(t *testing.T) {
 	d := newOrphanTestData(t)
 	client := &orphanStubClient{
@@ -139,15 +144,17 @@ func TestMachineInstanceCreate_SetsIdWhenSubresourceFails(t *testing.T) {
 	if !diags.HasError() {
 		t.Fatalf("サブリソース失敗なのにエラーが返っていない: %+v", diags)
 	}
-	if d.Id() == "" {
-		t.Errorf("CreateVm 成功後にエラーで抜けたのに ID が空 (#154)")
+	if d.Id() != "test-vm" {
+		t.Errorf("ID が %q。CreateVm 成功後にエラーで抜けたときも VM 名が入るべき (#154)", d.Id())
 	}
 }
 
-// 残存確認自体が失敗したときは ID を入れない。実機に VM が残っている可能性はあるが、
-// 「存在しない VM を state に載せて次の apply の Delete を詰ませる」より
-// 「孤児が残って import を案内される」方が復旧できる。
-func TestMachineInstanceCreate_LeavesIdEmptyWhenVmExistsCheckFails(t *testing.T) {
+// 残存確認自体が失敗したときは ID を入れる(載せる側に倒す)。
+//
+// VM が実在すれば tainted で自動 replace され、実在しなければ次の refresh の Read が
+// state から外して自動 create になる。どちらも自己修復する。載せないと VM が実在した
+// 場合に孤児が残り、「already exists、import せよ」で止まって必ず手作業になる。
+func TestMachineInstanceCreate_SetsIdWhenVmExistsCheckFails(t *testing.T) {
 	d := newOrphanTestData(t)
 	client := &orphanStubClient{
 		createVmErr:            errors.New("シミュレートした失敗"),
@@ -159,10 +166,10 @@ func TestMachineInstanceCreate_LeavesIdEmptyWhenVmExistsCheckFails(t *testing.T)
 	if !diags.HasError() {
 		t.Fatalf("CreateVm が失敗したのにエラーが返っていない: %+v", diags)
 	}
-	if client.vmExistsCalls != 2 {
-		t.Fatalf("VmExists の呼び出しが %d 回。残存確認まで到達していない", client.vmExistsCalls)
+	if !client.vmExistsCheckedAfterCreate {
+		t.Fatalf("CreateVm 失敗後の残存確認が走っていない")
 	}
-	if d.Id() != "" {
-		t.Errorf("残存確認が失敗したのに ID %q が入った。実機に VM が無ければ次の apply の Delete が詰む", d.Id())
+	if d.Id() != "test-vm" {
+		t.Errorf("ID が %q。存在を確認できないときは載せる側に倒す", d.Id())
 	}
 }

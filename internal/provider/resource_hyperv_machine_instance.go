@@ -1144,6 +1144,17 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		return diag.FromErr(err)
 	}
 
+	// ここで ID を入れるのは「作成完了の印」ではなく、**この先で失敗したときに実機の VM を
+	// state に紐付けて残すため** (#154)。SDK v2 の Resource.Apply はエラー時も
+	// ResourceData.State() を返すが、State() は ID が空だと nil を返す。つまり ID 未設定の
+	// まま return すると Terraform は何も記録できず、実機には VM だけが残って次の apply が
+	// VmExists で「already exists、import せよ」と止まる。
+	// ID さえ入っていれば tainted として記録され、次の apply が destroy→recreate する。
+	//
+	// この下の各サブリソース設定は PS 経路 / CIM 経路のどちらでも同じ関数を通るので、
+	// 両経路に等しく効く (巻き戻し案は wsman 側だけになり非対称だった)。
+	d.SetId(name)
+
 	err = client.CreateOrUpdateVmProcessors(ctx, name, vmProcessors)
 	if err != nil {
 		return diag.FromErr(err)
@@ -1186,7 +1197,6 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		return diag.FromErr(err)
 	}
 
-	d.SetId(name)
 	log.Printf("[INFO][hyperv][create] created hyperv machine: %#v", d)
 
 	return resourceHyperVMachineInstanceRead(ctx, d, meta)

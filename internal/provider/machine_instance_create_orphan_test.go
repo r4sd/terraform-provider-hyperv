@@ -9,6 +9,16 @@ import (
 	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
+// #154 の一連のテスト。
+//
+// なぜ ID の有無が効くのか (SDK / Terraform core の挙動):
+//   - helper/schema の Resource.Apply は diags にエラーがあっても data.State() を返す。
+//   - helper/schema の ResourceData.State() は ID が空だと nil を返す。
+//     → ID 未設定のままエラーで抜けると Terraform は state に何も記録できない。
+//   - tainted にするのは SDK ではなく Terraform core。node_resource_apply_instance.go の
+//     maybeTainted が `change.Action == plans.Create && err != nil` で AsTainted() する。
+//     → ID さえ入っていれば tainted として記録され、次の apply が destroy→recreate する。
+//
 // orphanStubClient は「実機に VM が残ったか」だけを操作できる api.Client。
 // 埋め込みにしているので、ここで上書きしていないメソッドが呼ばれたら nil ポインタで
 // 落ちる = 想定外の経路を通ったことがテスト失敗として現れる。
@@ -21,6 +31,8 @@ type orphanStubClient struct {
 	// CreateVm が DefineSystem 成功後に失敗したケース (true) と、
 	// DefineSystem 自体が失敗したケース (false) を撃ち分ける。
 	vmExistsAfterCreate bool
+	// vmExistsErrAfterCreate が非 nil なら CreateVm 後の VmExists がそれを返す。
+	vmExistsErrAfterCreate error
 	// subresourceErr が非 nil なら最初のサブリソース設定がそれを返す。
 	subresourceErr error
 
@@ -32,6 +44,9 @@ func (c *orphanStubClient) VmExists(_ context.Context, _ string) (api.VmExists, 
 	c.vmExistsCalls++
 	if !c.createVmCalled {
 		return api.VmExists{Exists: false}, nil // Create 冒頭の重複チェック
+	}
+	if c.vmExistsErrAfterCreate != nil {
+		return api.VmExists{}, c.vmExistsErrAfterCreate
 	}
 	return api.VmExists{Exists: c.vmExistsAfterCreate}, nil
 }
@@ -126,5 +141,28 @@ func TestMachineInstanceCreate_SetsIdWhenSubresourceFails(t *testing.T) {
 	}
 	if d.Id() == "" {
 		t.Errorf("CreateVm 成功後にエラーで抜けたのに ID が空 (#154)")
+	}
+}
+
+// 残存確認自体が失敗したときは ID を入れない。実機に VM が残っている可能性はあるが、
+// 「存在しない VM を state に載せて次の apply の Delete を詰ませる」より
+// 「孤児が残って import を案内される」方が復旧できる。
+func TestMachineInstanceCreate_LeavesIdEmptyWhenVmExistsCheckFails(t *testing.T) {
+	d := newOrphanTestData(t)
+	client := &orphanStubClient{
+		createVmErr:            errors.New("シミュレートした失敗"),
+		vmExistsErrAfterCreate: errors.New("シミュレートした WinRM 断"),
+	}
+
+	diags := resourceHyperVMachineInstanceCreate(context.Background(), d, api.Client(client))
+
+	if !diags.HasError() {
+		t.Fatalf("CreateVm が失敗したのにエラーが返っていない: %+v", diags)
+	}
+	if client.vmExistsCalls != 2 {
+		t.Fatalf("VmExists の呼び出しが %d 回。残存確認まで到達していない", client.vmExistsCalls)
+	}
+	if d.Id() != "" {
+		t.Errorf("残存確認が失敗したのに ID %q が入った。実機に VM が無ければ次の apply の Delete が詰む", d.Id())
 	}
 }

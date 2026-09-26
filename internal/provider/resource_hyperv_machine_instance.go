@@ -1146,9 +1146,13 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		// Set-Vm 群)。その場合だけ ID を入れて実機の VM を state に紐付ける (#154)。
 		//
 		// 存在確認を挟むのは、DefineSystem 自体が失敗したケースで ID を入れると
-		// 存在しない VM が state に載り、次の apply の Delete が UpdateVmStatus →
-		// waitForStableVmState → ErrVMNotFound で落ちて詰むため。VmExists が
-		// エラーを返したときも入れない (残すか詰ませるかなら、残す方が復旧できる)。
+		// 存在しない VM が state に載り、次の apply の Delete が詰むため。Delete は
+		// DeleteVm の前に UpdateVmStatus を呼び、不在の VM では両経路とも落ちる:
+		// CIM 経路は waitForStableVmState が ErrVMNotFound、PS 経路は
+		// updateVmStatusTemplate の `throw "VM does not exist"`。復旧に state rm が要る。
+		//
+		// VmExists がエラーを返したときも入れない。孤児が残る方は次の apply が
+		// 「import せよ」と案内を出して復旧できるので、迷ったら載せない側に倒す。
 		if existing, existsErr := client.VmExists(ctx, name); existsErr != nil {
 			log.Printf("[WARN][hyperv][create] %s の残存確認に失敗したため state に紐付けません。実機に VM が残っている可能性があります: %+v", name, existsErr)
 		} else if existing.Exists {

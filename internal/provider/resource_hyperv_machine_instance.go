@@ -495,14 +495,14 @@ func resourceHyperVMachineInstance() *schema.Resource {
 							Type:        schema.TypeBool,
 							Optional:    true,
 							Default:     true,
-							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Note: with `HYPERV_USE_WSMAN=1`, the adapter is recreated rather than updated in place whenever its `name`, `switch_name` or MAC address changes, so a dynamically assigned MAC address changes too. To keep the MAC address stable on that path, set this to `false` and specify `static_mac_address`; on that path setting `static_mac_address` alone has no effect, because the MAC address is only sent when this is `false`.",
+							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Setting this to `true` together with a non-empty `static_mac_address` is rejected at plan time, because that combination produces a permanent diff on every path (see `static_mac_address`). Note: with `HYPERV_USE_WSMAN=1`, the adapter is recreated rather than updated in place whenever its `name`, `switch_name` or MAC address changes, so a dynamically assigned MAC address changes too. To keep the MAC address stable, set this to `false` and specify `static_mac_address`.",
 						},
 						"static_mac_address": {
 							Type:             schema.TypeString,
 							Optional:         true,
 							Default:          "",
 							DiffSuppressFunc: api.DiffSuppressVmStaticMacAddress,
-							Description:      "Assigns a specific a MAC addresss to the virtual network adapter. With `HYPERV_USE_WSMAN=1` this value is only applied when `dynamic_mac_address` is `false`, and is ignored otherwise; on that path the adapter is also recreated rather than updated in place, so setting both `dynamic_mac_address = false` and this value is what keeps the MAC address stable. The PowerShell path applies this value regardless of `dynamic_mac_address`.",
+							Description:      "Assigns a specific MAC address to the virtual network adapter. Must be paired with `dynamic_mac_address = false`; leaving `dynamic_mac_address` at its default of `true` is rejected at plan time. That combination produces a permanent diff on both paths: the go-wsman path silently drops the address (read returns an empty `static_mac_address`), while the PowerShell path applies it and flips `DynamicMacAddressEnabled` to false (read returns `dynamic_mac_address = false`). With `HYPERV_USE_WSMAN=1` the adapter is also recreated rather than updated in place, so pinning both values is what keeps the MAC address stable.",
 						},
 						"mac_address_spoofing": {
 							Type:             schema.TypeString,
@@ -1744,5 +1744,55 @@ func resourceHyperVMachineInstanceCustomizeDiff(ctx context.Context, d *schema.R
 		}
 	}
 
+	if v, ok := d.GetOk("network_adaptors"); ok {
+		if err := validateNetworkAdapterMacOptions(v.([]interface{})); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateNetworkAdapterMacOptions は dynamic_mac_address と static_mac_address の
+// 矛盾する組み合わせを弾く (#160)。
+//
+// **CustomizeDiff から呼ぶ = plan の時点で止まる。** API 層に置くと apply 途中で
+// 落ち、状態が壊れたまま残る:
+//
+//	Create: CreateVm 成功 → NIC で error → SetId に到達せず **VM が孤児になる**
+//	Update: network_adaptors の変更は VM 停止を伴う → NIC で error
+//	        → 起動処理に到達せず **VM が Off のまま残る**
+//
+// どちらも「恒常 diff で毎 apply VM が停止する」より悪い。
+//
+// **経路を問わず落とす。** 実機で確かめた挙動 (2026-09-27):
+//
+//	CIM 経路: 静的 MAC を黙って捨てる  → static_mac_address 側で恒常 diff
+//	PS 経路:  静的 MAC を適用し DynamicMacAddressEnabled=False にする
+//	                                   → dynamic_mac_address 側で恒常 diff
+//
+// 壊れ方が違うだけで**どちらの経路でも整合しない** config なので、
+// HYPERV_USE_WSMAN の有無で扱いを変えない。
+func validateNetworkAdapterMacOptions(adapters []interface{}) error {
+	for i, raw := range adapters {
+		a, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		dynamic, _ := a["dynamic_mac_address"].(bool)
+		static, _ := a["static_mac_address"].(string)
+		if !dynamic || static == "" {
+			continue
+		}
+		name, _ := a["name"].(string)
+		if name == "" {
+			name = fmt.Sprintf("network_adaptors[%d]", i)
+		}
+		return fmt.Errorf(
+			"network_adaptors %q: dynamic_mac_address = true のまま static_mac_address を"+
+				"指定できません。MAC を固定するなら dynamic_mac_address = false を併記してください。"+
+				"この組み合わせは PowerShell 経路・go-wsman 経路のどちらでも恒常 diff になります",
+			name)
+	}
 	return nil
 }

@@ -55,6 +55,33 @@ func defaultVmNetworkAdapter() api.VmNetworkAdapter {
 	}
 }
 
+// conflictingMacAddressOptions は dynamic_mac_address と static_mac_address の
+// 矛盾する組み合わせを弾く (#160)。
+//
+// ⚠️ **一次の防御は plan 側**(provider の CustomizeDiff の
+// validateNetworkAdapterMacOptions)。ここは API を直接使う経路向けの二重防御で、
+// 通常の apply ではここに到達する前に plan で止まる。
+//
+// **ここで落ちると状態が壊れたまま残る**ので、一次防御にしてはいけない:
+//
+//	Create: CreateVm 成功後に呼ばれるため、error を返すと VM が孤児になる
+//	Update: VM を停止した後に呼ばれるため、error を返すと VM が Off のまま残る
+//
+// メッセージで PS 経路へ逃がさないこと。実機で確かめたとおり
+// **PS 経路でも恒常 diff になる**(静的 MAC は適用されるが
+// DynamicMacAddressEnabled が False になり dynamic_mac_address 側でずれる)。
+func conflictingMacAddressOptions(a api.VmNetworkAdapter) error {
+	if a.DynamicMacAddress && a.StaticMacAddress != "" {
+		return fmt.Errorf(
+			"hyperv-wsman: network_adaptor %q: dynamic_mac_address = true のまま "+
+				"static_mac_address を指定できません。MAC を固定するなら "+
+				"dynamic_mac_address = false を併記してください。"+
+				"この組み合わせは PowerShell 経路でも恒常 diff になります",
+			a.Name)
+	}
+	return nil
+}
+
 // unsupportedNetworkAdapterOptions は go-wsman 経路が未対応の NIC オプションが既定値以外で
 // 指定されていれば error を返す。
 //
@@ -62,6 +89,12 @@ func defaultVmNetworkAdapter() api.VmNetworkAdapter {
 // セキュリティ (spoofing/guard)・VLAN・帯域・チーミング・PacketDirect 等はまだ扱えないため、
 // silent drop を避けて明示的に拒否する (rules 準拠、これらは v2.1 以降)。
 func unsupportedNetworkAdapterOptions(a api.VmNetworkAdapter) error {
+	// 矛盾する MAC 指定は「未対応」ではなく「そもそも整合しない」ので別扱いにする (#160)。
+	// 未対応オプションの判定は add() でスライスに貯めてから最後に 1 回返す形なので、
+	// この呼び出しが前でも後でも返るメッセージは同じ。読む順序として前に置いてある。
+	if err := conflictingMacAddressOptions(a); err != nil {
+		return err
+	}
 	def := defaultVmNetworkAdapter()
 	var unsupported []string
 	add := func(cond bool, name string) {

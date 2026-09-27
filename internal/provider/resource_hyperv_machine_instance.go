@@ -495,14 +495,14 @@ func resourceHyperVMachineInstance() *schema.Resource {
 							Type:        schema.TypeBool,
 							Optional:    true,
 							Default:     true,
-							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Note: with `HYPERV_USE_WSMAN=1`, the adapter is recreated rather than updated in place whenever its `name`, `switch_name` or MAC address changes, so a dynamically assigned MAC address changes too. To keep the MAC address stable on that path, set this to `false` and specify `static_mac_address`; on that path setting `static_mac_address` alone has no effect, because the MAC address is only sent when this is `false`.",
+							Description: "Assigns a dynamically generated MAC address to the virtual network adapter. Setting this to `true` together with a non-empty `static_mac_address` is rejected at plan time, because that combination produces a permanent diff on every path (see `static_mac_address`). Note: with `HYPERV_USE_WSMAN=1`, the adapter is recreated rather than updated in place whenever its `name`, `switch_name` or MAC address changes, so a dynamically assigned MAC address changes too. To keep the MAC address stable, set this to `false` and specify `static_mac_address`.",
 						},
 						"static_mac_address": {
 							Type:             schema.TypeString,
 							Optional:         true,
 							Default:          "",
 							DiffSuppressFunc: api.DiffSuppressVmStaticMacAddress,
-							Description:      "Assigns a specific a MAC addresss to the virtual network adapter. With `HYPERV_USE_WSMAN=1` this value is only applied when `dynamic_mac_address` is `false`, and is ignored otherwise; on that path the adapter is also recreated rather than updated in place, so setting both `dynamic_mac_address = false` and this value is what keeps the MAC address stable. The PowerShell path applies this value regardless of `dynamic_mac_address`.",
+							Description:      "Assigns a specific MAC address to the virtual network adapter. Must be paired with `dynamic_mac_address = false`; leaving `dynamic_mac_address` at its default of `true` is rejected at plan time. That combination produces a permanent diff on both paths: the go-wsman path silently drops the address (read returns an empty `static_mac_address`), while the PowerShell path applies it and flips `DynamicMacAddressEnabled` to false (read returns `dynamic_mac_address = false`). With `HYPERV_USE_WSMAN=1` the adapter is also recreated rather than updated in place, so pinning both values is what keeps the MAC address stable.",
 						},
 						"mac_address_spoofing": {
 							Type:             schema.TypeString,

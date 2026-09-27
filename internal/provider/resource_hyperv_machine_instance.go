@@ -1714,5 +1714,55 @@ func resourceHyperVMachineInstanceCustomizeDiff(ctx context.Context, d *schema.R
 		}
 	}
 
+	if v, ok := d.GetOk("network_adaptors"); ok {
+		if err := validateNetworkAdapterMacOptions(v.([]interface{})); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateNetworkAdapterMacOptions は dynamic_mac_address と static_mac_address の
+// 矛盾する組み合わせを弾く (#160)。
+//
+// **CustomizeDiff から呼ぶ = plan の時点で止まる。** API 層に置くと apply 途中で
+// 落ち、状態が壊れたまま残る:
+//
+//	Create: CreateVm 成功 → NIC で error → SetId に到達せず **VM が孤児になる**
+//	Update: network_adaptors の変更は VM 停止を伴う → NIC で error
+//	        → 起動処理に到達せず **VM が Off のまま残る**
+//
+// どちらも「恒常 diff で毎 apply VM が停止する」より悪い。
+//
+// **経路を問わず落とす。** 実機で確かめた挙動 (2026-09-27):
+//
+//	CIM 経路: 静的 MAC を黙って捨てる  → static_mac_address 側で恒常 diff
+//	PS 経路:  静的 MAC を適用し DynamicMacAddressEnabled=False にする
+//	                                   → dynamic_mac_address 側で恒常 diff
+//
+// 壊れ方が違うだけで**どちらの経路でも整合しない** config なので、
+// HYPERV_USE_WSMAN の有無で扱いを変えない。
+func validateNetworkAdapterMacOptions(adapters []interface{}) error {
+	for i, raw := range adapters {
+		a, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		dynamic, _ := a["dynamic_mac_address"].(bool)
+		static, _ := a["static_mac_address"].(string)
+		if !dynamic || static == "" {
+			continue
+		}
+		name, _ := a["name"].(string)
+		if name == "" {
+			name = fmt.Sprintf("network_adaptors[%d]", i)
+		}
+		return fmt.Errorf(
+			"network_adaptors %q: dynamic_mac_address = true のまま static_mac_address を"+
+				"指定できません。MAC を固定するなら dynamic_mac_address = false を併記してください。"+
+				"この組み合わせは PowerShell 経路・go-wsman 経路のどちらでも恒常 diff になります",
+			name)
+	}
 	return nil
 }

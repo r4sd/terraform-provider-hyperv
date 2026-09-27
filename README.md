@@ -170,18 +170,19 @@ network_adaptors {
 
 `dynamic_mac_address` の既定は `true` なので、`static_mac_address` だけを書くと
 **どちらの経路でも恒常 diff になる**([#160](https://github.com/r4sd/terraform-provider-hyperv/issues/160))。
-壊れ方が違うだけで、PS 経路に戻しても直らない。
+壊れ方が違うだけで、PS 経路に戻しても直りません。
 
 | 経路 | 静的 MAC | read が返すもの | 恒常 diff が出る場所 |
 |---|---|---|---|
 | CIM | **黙って捨てられる** | `static_mac_address` = 空 | `static_mac_address` |
 | PS | **適用される** | `dynamic_mac_address` = false | `dynamic_mac_address` |
 
-そのため **CIM 経路はこの組み合わせを plan の時点でエラーにする**。
+そのため **この組み合わせは経路を問わず `terraform plan` でエラーになります**。
 `dynamic_mac_address = false` を併記してください。
 
 > 2026-09-27 実機確認: `Set-VMNetworkAdapter -StaticMacAddress` 実行後に
-> `DynamicMacAddressEnabled` が `True` → `False` へ変わることを確認した。
+> `DynamicMacAddressEnabled` が `True` → `False` へ変わることを cmdlet 直叩きで確認した
+> (provider を PS 経路で通した確認は未実施)。
 
 ### PowerShell 0 件で通る条件
 

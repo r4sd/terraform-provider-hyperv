@@ -1141,8 +1141,39 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 
 	err = client.CreateVm(ctx, name, path, generation, automaticCriticalErrorAction, automaticCriticalErrorActionTimeout, automaticStartAction, automaticStartDelay, automaticStopAction, checkpointType, dynamicMemory, guestControlledCacheTypes, highMemoryMappedIoSpace, lockOnDisconnect, lowMemoryMappedIoSpace, memoryMaximumBytes, memoryMinimumBytes, memoryStartupBytes, notes, processorCount, smartPagingFilePath, snapshotFileLocation, staticMemory, automaticCheckpointsEnabled)
 	if err != nil {
+		// CreateVm は VM を作った後にも失敗しうる (CIM 経路: DefineSystem 成功後の
+		// 自動生成 NIC 削除 / メモリ / CPU / ゼロ値補正の PS 委譲。PS 経路: New-Vm 後の
+		// Set-Vm 群)。その場合だけ ID を入れて実機の VM を state に紐付ける (#154)。
+		//
+		// 存在を確認できた場合と、確認そのものに失敗した場合は ID を入れる。
+		// 入れないのは「VM が無い」と確定したときだけ。
+		//
+		// 不在が確定しているのに載せると、`-refresh=false` で apply したときに
+		// Delete が落ちる。Delete は DeleteVm の前に UpdateVmStatus を呼び、
+		// 不在の VM では両経路とも失敗する (CIM: waitForStableVmState が
+		// ErrVMNotFound / PS: updateVmStatusTemplate の `throw "VM does not exist"`)。
+		// この場合は state rm が要る。既定の refresh が走る限りは Read の不在分岐が
+		// state から外すので、ここは狭い窓。
+		//
+		// 逆に確認に失敗したときは載せる側に倒す。VM が実在すれば tainted で
+		// 自動 replace、実在しなければ次の refresh の Read が state から外して
+		// 自動 create になる。載せないと VM が実在した場合に孤児が残り、
+		// 「import せよ」で止まって必ず手作業になる。
+		existing, existsErr := client.VmExists(ctx, name)
+		if existsErr != nil {
+			log.Printf("[WARN][hyperv][create] %s の残存確認に失敗しました。VM が残っている可能性があるため state に紐付けます: %+v", name, existsErr)
+		}
+		if existsErr != nil || existing.Exists {
+			d.SetId(name)
+		}
 		return diag.FromErr(err)
 	}
+
+	// ID を入れるのは「作成完了の印」ではなく、この先で失敗したときに実機の VM を
+	// state に紐付けて残すため (#154)。ID が空のままエラーで抜けると Terraform は
+	// state に何も記録できず、実機に VM だけが残って次の apply が VmExists で
+	// 「already exists、import せよ」と止まる。根拠は machine_instance_create_orphan_test.go。
+	d.SetId(name)
 
 	err = client.CreateOrUpdateVmProcessors(ctx, name, vmProcessors)
 	if err != nil {
@@ -1186,7 +1217,6 @@ func resourceHyperVMachineInstanceCreate(ctx context.Context, d *schema.Resource
 		return diag.FromErr(err)
 	}
 
-	d.SetId(name)
 	log.Printf("[INFO][hyperv][create] created hyperv machine: %#v", d)
 
 	return resourceHyperVMachineInstanceRead(ctx, d, meta)

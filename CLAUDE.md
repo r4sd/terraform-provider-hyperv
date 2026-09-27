@@ -1,5 +1,10 @@
 # terraform-provider-hyperv — Claude Code 作業規約
 
+> **批判的レビュー(DoD ⑥)の観点は [`.github/CRITICAL_REVIEW.md`](.github/CRITICAL_REVIEW.md)
+> にまとめてある。** 毎回プロンプトを書き起こさず、そのファイルを指して起動する。
+> 共通観点は go-wsman 側の同名ファイルを参照し、ここには provider 固有のものだけを置く。
+
+
 ## このファイルの位置づけ
 
 **ここは「今どう開発するか」だけを書く。** 経緯や却下した案は書かない(古い記述が残ると、どれが現行か分からなくなるため)。

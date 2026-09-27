@@ -163,16 +163,25 @@ VLAN や帯域(`vlan_access` / `vlan_id` / `maximum_bandwidth` 等)は CIM 経�
 network_adaptors {
   name                = "eth0"
   switch_name         = hyperv_network_switch.example.name
-  dynamic_mac_address = false            # これが無いと static_mac_address は黙って捨てられる
+  dynamic_mac_address = false            # これが無いと plan でエラーになる
   static_mac_address  = "00155d000101"
 }
 ```
 
-`dynamic_mac_address` の既定は `true` で、**CIM 経路では** `static_mac_address` だけを書いても
-**MAC は送られず、NIC の同一性も `dynamic` のまま**になる。さらに read が
-`static_mac_address` に空を返すので恒常 diff になり、apply のたびに VM が停止する
-([#160](https://github.com/r4sd/terraform-provider-hyperv/issues/160))。
-PS 経路は `dynamic_mac_address` を見ずに `-StaticMacAddress` を適用するので、この差は CIM 経路固有。
+`dynamic_mac_address` の既定は `true` なので、`static_mac_address` だけを書くと
+**どちらの経路でも恒常 diff になる**([#160](https://github.com/r4sd/terraform-provider-hyperv/issues/160))。
+壊れ方が違うだけで、PS 経路に戻しても直らない。
+
+| 経路 | 静的 MAC | read が返すもの | 恒常 diff が出る場所 |
+|---|---|---|---|
+| CIM | **黙って捨てられる** | `static_mac_address` = 空 | `static_mac_address` |
+| PS | **適用される** | `dynamic_mac_address` = false | `dynamic_mac_address` |
+
+そのため **CIM 経路はこの組み合わせを plan の時点でエラーにする**。
+`dynamic_mac_address = false` を併記してください。
+
+> 2026-09-27 実機確認: `Set-VMNetworkAdapter -StaticMacAddress` 実行後に
+> `DynamicMacAddressEnabled` が `True` → `False` へ変わることを確認した。
 
 ### PowerShell 0 件で通る条件
 

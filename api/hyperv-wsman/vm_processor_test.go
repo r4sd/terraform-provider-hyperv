@@ -11,13 +11,20 @@ import (
 
 // TestClientConfig_ImplementsHypervVmProcessorClient は ClientConfig が
 // api.HypervVmProcessorClient を実装し、無条件 PS だった GetVmProcessors が本パッケージで
-// シャドウイング (promotion ではなく直接定義) されていることを検証する。Create/Update は
-// 埋め込み winrm から promotion されるため、ここでは検証しない。
+// シャドウイング (promotion ではなく直接定義) されていることを検証する。
+//
+// **複数形の CreateOrUpdateVmProcessors もシャドウ済** (vm_processor.go:76)。
+// 昇格のままなのは単数形の GetVmProcessor / CreateOrUpdateVmProcessor で、
+// これらは api.Client のインターフェースに含まれないため検証しない
+// (以前このコメントは「Create/Update は promotion」と書いていたが、複数形については誤り)。
 func TestClientConfig_ImplementsHypervVmProcessorClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmProcessorClient = c // コンパイル時チェック
 
-	assertShadowedIn(t, "GetVmProcessors", "vm_processor.go")
+	assertAllShadowedIn(t, "vm_processor.go",
+		"GetVmProcessors",
+		"CreateOrUpdateVmProcessors",
+	)
 }
 
 // TestProcessorFromSettingData は CIM → provider の単位変換が正しいことを検証する。

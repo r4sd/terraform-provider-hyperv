@@ -1,7 +1,6 @@
 package hyperv_wsman
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/taliesins/terraform-provider-hyperv/api"
@@ -25,108 +24,6 @@ func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 		"CreateOrUpdateVhd",
 		"DeleteVhd",
 	)
-}
-
-// TestClientConfig_VhdExists_DefinedInWsmanPackage は VhdExists が
-// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する。
-//
-// これにより hyperv_winrm.ClientConfig.VhdExists ではなく、本パッケージの
-// 実装が呼ばれることが保証される (シャドウイング)。
-func TestClientConfig_VhdExists_DefinedInWsmanPackage(t *testing.T) {
-	// VhdExists はポインタレシーバなので *ClientConfig で検索する
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("VhdExists")
-	if !ok {
-		t.Fatal("ClientConfig should have VhdExists method")
-	}
-
-	// MethodFunc の Pkg() を確認する代わりに、シグネチャを既知のものと突合
-	if method.Type.NumIn() != 3 { // receiver + ctx + path
-		t.Errorf("VhdExists signature mismatch: NumIn=%d", method.Type.NumIn())
-	}
-	if method.Type.NumOut() != 2 { // VhdExists + error
-		t.Errorf("VhdExists signature mismatch: NumOut=%d", method.Type.NumOut())
-	}
-}
-
-// TestClientConfig_GetVhd_DefinedInWsmanPackage は GetVhd が
-// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する。
-//
-// これにより hyperv_winrm.ClientConfig.GetVhd ではなく、本パッケージの
-// 実装が呼ばれることが保証される (シャドウイング)。
-func TestClientConfig_GetVhd_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("GetVhd")
-	if !ok {
-		t.Fatal("ClientConfig should have GetVhd method")
-	}
-
-	// シグネチャ: (c *ClientConfig).GetVhd(ctx, path) (api.Vhd, error)
-	if method.Type.NumIn() != 3 { // receiver + ctx + path
-		t.Errorf("GetVhd signature mismatch: NumIn=%d, want 3", method.Type.NumIn())
-	}
-	if method.Type.NumOut() != 2 { // api.Vhd + error
-		t.Errorf("GetVhd signature mismatch: NumOut=%d, want 2", method.Type.NumOut())
-	}
-}
-
-// TestClientConfig_ResizeVhd_DefinedInWsmanPackage は ResizeVhd が
-// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する (Phase B-X.2)。
-func TestClientConfig_ResizeVhd_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("ResizeVhd")
-	if !ok {
-		t.Fatal("ClientConfig should have ResizeVhd method")
-	}
-
-	// シグネチャ: (c *ClientConfig).ResizeVhd(ctx, path, size) error
-	if method.Type.NumIn() != 4 { // receiver + ctx + path + size
-		t.Errorf("ResizeVhd signature mismatch: NumIn=%d, want 4", method.Type.NumIn())
-	}
-	if method.Type.NumOut() != 1 { // error
-		t.Errorf("ResizeVhd signature mismatch: NumOut=%d, want 1", method.Type.NumOut())
-	}
-}
-
-// TestClientConfig_CreateOrUpdateVhd_DefinedInWsmanPackage は CreateOrUpdateVhd が
-// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する (Phase B-X.3)。
-func TestClientConfig_CreateOrUpdateVhd_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("CreateOrUpdateVhd")
-	if !ok {
-		t.Fatal("ClientConfig should have CreateOrUpdateVhd method")
-	}
-
-	// シグネチャ: (c *ClientConfig).CreateOrUpdateVhd(ctx, path, source, sourceVm,
-	//   sourceDisk, vhdType, parentPath, size, blockSize, logicalSectorSize,
-	//   physicalSectorSize) error
-	if method.Type.NumIn() != 12 { // receiver + 11 引数
-		t.Errorf("CreateOrUpdateVhd signature mismatch: NumIn=%d, want 12", method.Type.NumIn())
-	}
-	if method.Type.NumOut() != 1 { // error
-		t.Errorf("CreateOrUpdateVhd signature mismatch: NumOut=%d, want 1", method.Type.NumOut())
-	}
-}
-
-// TestClientConfig_DeleteVhd_DefinedInWsmanPackage は DeleteVhd が
-// hyperv-wsman パッケージ自身で定義されていることを reflect 経由で検証する (Phase B-X.4)。
-//
-// これにより hyperv_winrm.ClientConfig.DeleteVhd (PowerShell template engine 版) ではなく、
-// 本パッケージの薄ラッパー実装 (案D: winrm-helper.RemoveFilesByPrefix 経由) が呼ばれる。
-func TestClientConfig_DeleteVhd_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("DeleteVhd")
-	if !ok {
-		t.Fatal("ClientConfig should have DeleteVhd method")
-	}
-
-	// シグネチャ: (c *ClientConfig).DeleteVhd(ctx, path) error
-	if method.Type.NumIn() != 3 { // receiver + ctx + path
-		t.Errorf("DeleteVhd signature mismatch: NumIn=%d, want 3", method.Type.NumIn())
-	}
-	if method.Type.NumOut() != 1 { // error
-		t.Errorf("DeleteVhd signature mismatch: NumOut=%d, want 1", method.Type.NumOut())
-	}
 }
 
 // TestVhdDeletePrefix は VHD パスから「削除対象ディレクトリ + prefix」への分解を検証する。

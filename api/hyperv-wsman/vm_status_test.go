@@ -1,7 +1,6 @@
 package hyperv_wsman
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/taliesins/terraform-provider-hyperv/api"
@@ -13,12 +12,10 @@ func TestClientConfig_ImplementsHypervVmStatusClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmStatusClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{"GetVmStatus", "UpdateVmStatus"} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("メソッド %s が hyperv-wsman で定義されていない (シャドウイングされない)", methodName)
-		}
-	}
+	assertAllShadowedIn(t, "vm_status.go",
+		"GetVmStatus",
+		"UpdateVmStatus",
+	)
 }
 
 // TestEnabledStateToVmState は Msvm_ComputerSystem.EnabledState → provider VmState の変換を検証する。

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
@@ -23,19 +22,14 @@ func TestClientConfig_ImplementsHypervVmNetworkAdapterClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmNetworkAdapterClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{
+	assertAllShadowedIn(t, "vm_network_adapter.go",
 		"CreateVmNetworkAdapter",
 		"GetVmNetworkAdapters",
 		"UpdateVmNetworkAdapter",
 		"DeleteVmNetworkAdapter",
 		"CreateOrUpdateVmNetworkAdapters",
 		"WaitForVmNetworkAdaptersIps",
-	} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("メソッド %s が hyperv-wsman で定義されていない (シャドウイングされない)", methodName)
-		}
-	}
+	)
 }
 
 // TestWaitForVmNetworkAdaptersIps_SkipsWhenAllFalse は #76 のスキップ判定を検証する。

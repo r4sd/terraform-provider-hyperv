@@ -1,7 +1,6 @@
 package hyperv_wsman
 
 import (
-	"reflect"
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
@@ -15,18 +14,13 @@ func TestClientConfig_ImplementsHypervVmDvdDriveClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmDvdDriveClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{
+	assertAllShadowedIn(t, "vm_dvd_drive.go",
 		"CreateVmDvdDrive",
 		"GetVmDvdDrives",
 		"UpdateVmDvdDrive",
 		"DeleteVmDvdDrive",
 		"CreateOrUpdateVmDvdDrives",
-	} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("メソッド %s が hyperv-wsman で定義されていない (シャドウイングされない)", methodName)
-		}
-	}
+	)
 }
 
 // TestValidateDvdOptions は未対応オプション(空 ISO パス・非既定リソースプール)を破壊操作の

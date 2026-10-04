@@ -1,7 +1,6 @@
 package hyperv_wsman
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
@@ -16,18 +15,13 @@ func TestClientConfig_ImplementsHypervVmHardDiskDriveClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmHardDiskDriveClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{
+	assertAllShadowedIn(t, "vm_hard_disk_drive.go",
 		"CreateVmHardDiskDrive",
 		"GetVmHardDiskDrives",
 		"UpdateVmHardDiskDrive",
 		"DeleteVmHardDiskDrive",
 		"CreateOrUpdateVmHardDiskDrives",
-	} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("メソッド %s が hyperv-wsman で定義されていない (シャドウイングされない)", methodName)
-		}
-	}
+	)
 }
 
 func TestWsmanControllerType(t *testing.T) {

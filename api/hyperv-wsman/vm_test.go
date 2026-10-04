@@ -2,7 +2,6 @@ package hyperv_wsman
 
 import (
 	"math"
-	"reflect"
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
@@ -16,31 +15,13 @@ func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{
-		"VmExists", // ← 本パッケージで定義 (シャドウイング、C-1.1)
-		"GetVm",    // ← 本パッケージで定義 (シャドウイング、C-1.1)
-		"CreateVm", // ← 本パッケージで定義 (シャドウイング、C-1.2)
-		"UpdateVm", // ← 本パッケージで定義 (シャドウイング、C-1.3)
-		"DeleteVm", // ← 本パッケージで定義 (シャドウイング、C-1.4)
-	} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("ClientConfig should expose method %s (via shadow or promotion)", methodName)
-		}
-	}
-}
-
-// TestVmExists_DefinedInWsmanPackage は VmExists が本パッケージで定義されている
-// (= シャドウイングが効く) ことをシグネチャで確認する。
-func TestVmExists_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("VmExists")
-	if !ok {
-		t.Fatal("ClientConfig should have VmExists method")
-	}
-	if method.Type.NumIn() != 3 { // receiver + ctx + name
-		t.Errorf("VmExists: NumIn = %d, want 3", method.Type.NumIn())
-	}
+	assertAllShadowedIn(t, "vm.go",
+		"VmExists",
+		"GetVm",
+		"CreateVm",
+		"UpdateVm",
+		"DeleteVm",
+	)
 }
 
 // TestVmGenerationFromSubType は VirtualSystemSubType から Generation 番号への変換を検証する。
@@ -192,19 +173,6 @@ func TestVmFromSettingData_InvalidUserSnapshotType(t *testing.T) {
 	}
 }
 
-// TestDeleteVm_DefinedInWsmanPackage は DeleteVm が本パッケージで定義されている
-// (= シャドウイングが効き、PowerShell 版を置き換える) ことをシグネチャで確認する。
-func TestDeleteVm_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	method, ok := cType.MethodByName("DeleteVm")
-	if !ok {
-		t.Fatal("ClientConfig should have DeleteVm method")
-	}
-	if method.Type.NumIn() != 3 { // receiver + ctx + name
-		t.Errorf("DeleteVm: NumIn = %d, want 3", method.Type.NumIn())
-	}
-}
-
 // TestNeedsTurnOff は EnabledState から「削除前に停止が必要か」の判定を検証する。
 //
 // DestroySystem は起動中 (= Off 以外) の VM では失敗するため、Off(3) 以外は
@@ -225,15 +193,6 @@ func TestNeedsTurnOff(t *testing.T) {
 		if got := needsTurnOff(tt.state); got != tt.want {
 			t.Errorf("needsTurnOff(%d) [%s] = %v, want %v", tt.state, tt.name, got, tt.want)
 		}
-	}
-}
-
-// TestCreateVm_DefinedInWsmanPackage は CreateVm が本パッケージで定義されている
-// (= シャドウイングが効き、PowerShell 版を置き換える) ことを確認する。
-func TestCreateVm_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	if _, ok := cType.MethodByName("CreateVm"); !ok {
-		t.Fatal("ClientConfig should have CreateVm method")
 	}
 }
 
@@ -574,15 +533,6 @@ func TestVmSettingDataForCreate(t *testing.T) {
 	// 範囲外の checkpoint_type は黙って通さない (#125)。
 	if _, err := vmSettingDataForCreate("x", "", 2, 0, 0, 0, false, 0, api.OnOffState_Off, 0, "", "", "", api.CheckpointType(99), false, 0, 30); err == nil {
 		t.Error("checkpoint_type=99 はエラーになるべき")
-	}
-}
-
-// TestUpdateVm_DefinedInWsmanPackage は UpdateVm が本パッケージで定義されている
-// (= シャドウイングが効き、PowerShell 版を置き換える) ことを確認する。
-func TestUpdateVm_DefinedInWsmanPackage(t *testing.T) {
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	if _, ok := cType.MethodByName("UpdateVm"); !ok {
-		t.Fatal("ClientConfig should have UpdateVm method")
 	}
 }
 

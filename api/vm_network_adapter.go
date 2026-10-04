@@ -130,13 +130,31 @@ func (d *IovInterruptModerationValue) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// DiffSuppressVmStaticMacAddress は static_mac_address の diff を抑止するかを返す。
+//
+// 🔴 **大小文字を無視する。** 実機は MAC を**大文字**で保存して返すため、config を
+// 小文字で書くと state (大文字) と一致せず diff が残り続ける。network_adaptors は
+// hasChangesThatRequireVmToBeOff に含まれるので、**apply のたびに VM が停止する** (#165)。
+//
+// 2026-10-05 実機確認 (使い捨て VM、小文字 "00155d0a0b0c" を投入):
+//
+//	経路                                    読み戻し
+//	CIM (ModifyResourceSettings)            00155D0A0B0C
+//	PS  (Set-VMNetworkAdapter)              00155D0A0B0C
+//
+// **両経路で大文字化される。** Issue #165 は CIM 経路固有の懸念として起票されたが、
+// PS 経路も同じだった。この関数は経路に依らず使われるので、ここで吸収するのが正しい。
+//
+// 区切り文字の違い (コロン・ハイフン) は**抑止しない**。書き込み側の normalizeMac は
+// 区切りを落とすが、それをここで抑止対象に含めると「本当に違う MAC」まで抑止しかねない。
+// 実機で確認したのは大小文字の差だけなので、そこに留める。
 func DiffSuppressVmStaticMacAddress(key, old, new string, d *schema.ResourceData) bool {
 	// Static Mac Address has not been set, so we don't mind what ever value is automatically generated
 	if new == "" {
 		return true
 	}
 
-	return new == old
+	return strings.EqualFold(new, old)
 }
 
 func ExpandNetworkAdapters(d *schema.ResourceData) ([]VmNetworkAdapter, error) {

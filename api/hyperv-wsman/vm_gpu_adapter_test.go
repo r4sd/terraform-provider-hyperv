@@ -15,12 +15,10 @@ func TestClientConfig_ImplementsHypervVmGpuAdapterClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmGpuAdapterClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{"GetVmGpuAdapters", "CreateOrUpdateVmGpuAdapters"} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("メソッド %s が hyperv-wsman で定義されていない (シャドウイングされない)", methodName)
-		}
-	}
+	assertAllShadowedIn(t, "vm_gpu_adapter.go",
+		"GetVmGpuAdapters",
+		"CreateOrUpdateVmGpuAdapters",
+	)
 }
 
 // TestGpuAdapterFromSettingData は go-wsman の型から provider 型への変換が全 12 プロパティを

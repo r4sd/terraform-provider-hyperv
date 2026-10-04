@@ -18,19 +18,13 @@ func TestClientConfig_ImplementsHypervVhdClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVhdClient = c // コンパイル時チェック
 
-	// メソッド存在の確認
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{
-		"VhdExists",         // ← 本パッケージで定義 (シャドウイング)
-		"GetVhd",            // ← 本パッケージで定義 (シャドウイング、Phase B-X.1)
-		"ResizeVhd",         // ← 本パッケージで定義 (シャドウイング、Phase B-X.2)
-		"CreateOrUpdateVhd", // ← 本パッケージで定義 (シャドウイング、Phase B-X.3)
-		"DeleteVhd",         // ← 本パッケージで定義 (シャドウイング、Phase B-X.4)
-	} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("ClientConfig should expose method %s (via shadow or promotion)", methodName)
-		}
-	}
+	assertAllShadowedIn(t, "vhd.go",
+		"VhdExists",
+		"GetVhd",
+		"ResizeVhd",
+		"CreateOrUpdateVhd",
+		"DeleteVhd",
+	)
 }
 
 // TestClientConfig_VhdExists_DefinedInWsmanPackage は VhdExists が

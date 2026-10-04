@@ -16,18 +16,13 @@ func TestClientConfig_ImplementsHypervVmClient(t *testing.T) {
 	var c *ClientConfig
 	var _ api.HypervVmClient = c // コンパイル時チェック
 
-	cType := reflect.TypeOf((*ClientConfig)(nil))
-	for _, methodName := range []string{
-		"VmExists", // ← 本パッケージで定義 (シャドウイング、C-1.1)
-		"GetVm",    // ← 本パッケージで定義 (シャドウイング、C-1.1)
-		"CreateVm", // ← 本パッケージで定義 (シャドウイング、C-1.2)
-		"UpdateVm", // ← 本パッケージで定義 (シャドウイング、C-1.3)
-		"DeleteVm", // ← 本パッケージで定義 (シャドウイング、C-1.4)
-	} {
-		if _, ok := cType.MethodByName(methodName); !ok {
-			t.Errorf("ClientConfig should expose method %s (via shadow or promotion)", methodName)
-		}
-	}
+	assertAllShadowedIn(t, "vm.go",
+		"VmExists",
+		"GetVm",
+		"CreateVm",
+		"UpdateVm",
+		"DeleteVm",
+	)
 }
 
 // TestVmExists_DefinedInWsmanPackage は VmExists が本パッケージで定義されている

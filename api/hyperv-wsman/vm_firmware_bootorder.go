@@ -128,8 +128,9 @@ func resolveOneBootOrder(
 // hyperv.Client.BootSourceRef、テストでは差し替え可能にするため関数値で受ける)。
 //
 // NetworkAdapter は NetworkAdapterName で、DvdDrive/HardDiskDrive は
-// ControllerNumber+ControllerLocation で対応デバイスを突き合わせる (resolveOneBootOrder の
-// 読み取り側と対称)。対応するデバイスが見つからない場合は silent drop せず明示エラーにする
+// ControllerNumber+ControllerLocation、または**どちらかが未指定なら Path** で
+// 対応デバイスを突き合わせる (resolveDriveBootOrder 参照)。
+// 対応するデバイスが見つからない場合は silent drop せず明示エラーにする
 // (DoD: 黙って成功報告する実装は禁止)。
 func resolveBootSourceRefs(
 	bootSourceRef func(deviceInstanceID string) string,
@@ -228,9 +229,14 @@ func resolveBootOrderDeviceID(
 	}
 }
 
-// bootOrderUnspecified は controller_number / controller_location の「未指定」を表す。
+// bootOrderUnspecified は controller_number / controller_location の「未指定」の境界値。
 //
 // PS 版スキーマの Default が -1 で、**path だけでデバイスを指定する運用**を許容している。
+//
+// **この値「以下」を未指定として扱う。** PS テンプレート (api/hyperv-winrm/vm_firmware.go) が
+// `-gt -1` で判定しており、-2 のような値も未指定になる。schema に負値のバリデーションが
+// 無いので実際に書けてしまう。== で比較すると CIM 経路だけ「指定」扱いになり、
+// 同じ config が経路で違う結果になる。
 const bootOrderUnspecified = -1
 
 // driveCandidate は boot order の突合用に DVD と HardDisk を同じ形で扱う中間表現。
@@ -244,8 +250,14 @@ type driveCandidate struct {
 // resolveDriveBootOrder は 1 件の boot order に対応する Drive の InstanceID を返す。
 //
 // **controller_number / controller_location が両方指定されている場合は、
-// その 2 つの完全一致のみで決める (path は見ない)。** 従来の挙動で、ここを変えて path も
-// 条件に加えると「controller 位置は合っているが path の表記が違う」既存 config を壊す。
+// その 2 つの完全一致のみで決める (path は見ない)。** CIM 経路の従来の挙動で、ここを変えて
+// path も条件に加えると「controller 位置は合っているが path の表記が違う」既存 config を壊す。
+//
+// ⚠️ **ここは PS 経路と挙動が違う。** PS テンプレート (api/hyperv-winrm/vm_firmware.go) は
+// path が非空なら**両方指定でも** `-ieq` で絞るため、path 不一致のエントリは 0 台になる。
+// この差は本関数の導入前から存在する (旧実装も両方指定時は controller だけを見ていた)。
+// 揃えるかどうかは #170 で追跡する。揃えると CIM 経路で現に動いている config が
+// PS 委譲に落ちるため、本 Issue (#100) のスコープでは変えない。
 //
 // どちらかが未指定 (-1) のときに限り、指定された側 + path で絞り込む (#100 項目 3)。
 // これが無いと -1 は実デバイスに一致せず必ずエラー → PS 委譲になり PS-0 が達成できない。
@@ -255,8 +267,8 @@ type driveCandidate struct {
 // 絞り込めない場合は silent drop も「1 台だから選ぶ」もせず明示エラーにする。
 // 何を指しているのか決まっていない指定で推測で 1 台を掴むより、PS へ委譲させる方が安全。
 func resolveDriveBootOrder(kind string, bo api.Gen2BootOrder, candidates []driveCandidate) (string, error) {
-	numberSpecified := bo.ControllerNumber != bootOrderUnspecified
-	locationSpecified := bo.ControllerLocation != bootOrderUnspecified
+	numberSpecified := bo.ControllerNumber > bootOrderUnspecified
+	locationSpecified := bo.ControllerLocation > bootOrderUnspecified
 
 	if numberSpecified && locationSpecified {
 		for _, c := range candidates {

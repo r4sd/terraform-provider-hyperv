@@ -86,6 +86,69 @@ func TestResolveBootSourceRefs_PathOnly(t *testing.T) {
 		}
 	})
 
+	// ⚠️ 上の「片方だけ -1」だけでは controller フィルタを固定できない。
+	// fixture 内で path が既に一意なので、フィルタを外しても同じ 1 台に落ちてしまう
+	// (実際に変異が 2 本生き残った)。**同じ path を別の controller 位置に 2 台置き、
+	// 各フィルタが個別に必要になる形**にして初めて固定できる。
+	t.Run("片側指定: 各 controller フィルタが個別に効く", func(t *testing.T) {
+		const samePath = `D:\VMs\same.vhdx`
+		same := []hardDiskDriveRef{
+			{driveInstanceID: "ctrl0-loc0", drive: api.VmHardDiskDrive{
+				ControllerNumber: 0, ControllerLocation: 0, Path: samePath}},
+			{driveInstanceID: "ctrl1-loc1", drive: api.VmHardDiskDrive{
+				ControllerNumber: 1, ControllerLocation: 1, Path: samePath}},
+		}
+
+		cases := []struct {
+			name   string
+			order  api.Gen2BootOrder
+			wantID string
+		}{
+			{
+				// number フィルタを外すと 2 台一致 → 曖昧エラーになる
+				name: "number のみ指定 + path",
+				order: api.Gen2BootOrder{
+					Type: api.Gen2BootType_HardDiskDrive, Path: samePath,
+					ControllerNumber: 1, ControllerLocation: -1},
+				wantID: "ctrl1-loc1",
+			},
+			{
+				// location フィルタを外すと 2 台一致 → 曖昧エラーになる
+				name: "location のみ指定 + path",
+				order: api.Gen2BootOrder{
+					Type: api.Gen2BootType_HardDiskDrive, Path: samePath,
+					ControllerNumber: -1, ControllerLocation: 0},
+				wantID: "ctrl0-loc0",
+			},
+			{
+				// path を書かず controller 片側だけで絞るケース
+				name: "number のみ指定 (path なし)",
+				order: api.Gen2BootOrder{
+					Type:             api.Gen2BootType_HardDiskDrive,
+					ControllerNumber: 1, ControllerLocation: -1},
+				wantID: "ctrl1-loc1",
+			},
+			{
+				name: "location のみ指定 (path なし)",
+				order: api.Gen2BootOrder{
+					Type:             api.Gen2BootType_HardDiskDrive,
+					ControllerNumber: -1, ControllerLocation: 0},
+				wantID: "ctrl0-loc0",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got, err := resolveBootSourceRefs(ref, []api.Gen2BootOrder{tc.order}, nil, nil, same)
+				if err != nil {
+					t.Fatalf("resolveBootSourceRefs: %v", err)
+				}
+				if len(got) != 1 || got[0] != "REF:"+tc.wantID {
+					t.Errorf("got %+v, want [REF:%s]", got, tc.wantID)
+				}
+			})
+		}
+	})
+
 	t.Run("path が一致しなければ明示エラー", func(t *testing.T) {
 		_, err := resolveBootSourceRefs(ref, []api.Gen2BootOrder{{
 			Type: api.Gen2BootType_HardDiskDrive, Path: `D:\VMs\missing.vhdx`,
@@ -93,6 +156,21 @@ func TestResolveBootSourceRefs_PathOnly(t *testing.T) {
 		}}, nil, dvdRefs, diskRefs)
 		if err == nil {
 			t.Fatal("一致するデバイスが無い場合は明示エラーになるべき")
+		}
+	})
+
+	t.Run("-1 以外の負値も未指定として扱う (PS の -gt -1 と同じ)", func(t *testing.T) {
+		// schema に負値のバリデーションが無いので -2 も書けてしまう。
+		// == で比較すると CIM 経路だけ「指定」扱いになり、同じ config が経路で違う結果になる。
+		got, err := resolveBootSourceRefs(ref, []api.Gen2BootOrder{{
+			Type: api.Gen2BootType_HardDiskDrive, Path: `D:\VMs\data.vhdx`,
+			ControllerNumber: -2, ControllerLocation: -5,
+		}}, nil, dvdRefs, diskRefs)
+		if err != nil {
+			t.Fatalf("resolveBootSourceRefs: %v", err)
+		}
+		if len(got) != 1 || got[0] != "REF:"+disk2 {
+			t.Errorf("got %+v, want [REF:%s]", got, disk2)
 		}
 	})
 

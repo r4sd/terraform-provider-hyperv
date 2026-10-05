@@ -70,21 +70,55 @@ func (c *ClientConfig) CreateVmDvdDrive(
 	if err := validateDvdOptions(path, resourcePoolName); err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
 	}
-	guid, err := c.resolveVMGUID(ctx, vmName)
+	guid, gen2, err := c.resolveDvdTarget(ctx, vmName)
 	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
+		return err
 	}
-	gen2, err := c.vmIsGen2(ctx, guid)
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
-	}
-	ct := hyperv.ControllerTypeIDE
 	if gen2 {
-		// go-wsman で作った Gen2 VM はシェル状態で SCSI Controller を持たない (#88) ため保証する。
-		ct = hyperv.ControllerTypeSCSI
 		if err := c.ensureScsiController(ctx, guid, int32(controllerNumber)); err != nil {
 			return err
 		}
+	}
+	return c.attachDvdByGUID(ctx, vmName, guid, gen2, controllerNumber, controllerLocation, path)
+}
+
+// resolveDvdTarget は DVD 操作に必要な VM GUID と世代をまとめて解決する。
+//
+// どちらも **VM ごとに 1 回で足りる**。attach ごとに解決すると
+// Msvm_ComputerSystem と Msvm_VirtualSystemSettingData の列挙が N 回走る (#68 項目 1)。
+func (c *ClientConfig) resolveDvdTarget(ctx context.Context, vmName string) (guid string, gen2 bool, err error) {
+	guid, err = c.resolveVMGUID(ctx, vmName)
+	if err != nil {
+		return "", false, fmt.Errorf("hyperv-wsman: DVD 操作 %q: %w", vmName, err)
+	}
+	gen2, err = c.vmIsGen2(ctx, guid)
+	if err != nil {
+		return "", false, fmt.Errorf("hyperv-wsman: DVD 操作 %q: %w", vmName, err)
+	}
+	return guid, gen2, nil
+}
+
+// attachDvdByGUID は解決済みの GUID / 世代を使って DVD ドライブを 1 本追加する。
+//
+// vmName はエラーメッセージ用 (go-wsman へは guid を渡す)。
+//
+// **SCSI Controller の存在保証 (ensureScsiController) は呼び出し側の責任。**
+// ensureScsiController は `for len(controllers) <= controllerNumber` で 0..controllerNumber を
+// まとめて作るので、**最大の controllerNumber で 1 回呼べば全 attach を満たす**。
+// ここに置くと attach ごとに ListSCSIControllers が走る (#68 項目 1)。
+func (c *ClientConfig) attachDvdByGUID(
+	ctx context.Context,
+	vmName, guid string,
+	gen2 bool,
+	controllerNumber int,
+	controllerLocation int,
+	path string,
+) error {
+	ct := hyperv.ControllerTypeIDE
+	if gen2 {
+		// go-wsman で作った Gen2 VM はシェル状態で SCSI Controller を持たない (#88)。
+		// 存在保証は呼び出し側で済んでいる前提。
+		ct = hyperv.ControllerTypeSCSI
 	}
 	// メディアなし (path 空) は Drive だけを追加する (#67)。AttachDVD は storage の紐付けまで
 	// 行うので、空メディアには使えない (go-wsman 側で空 Path を拒否する)。
@@ -181,8 +215,28 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmDvdDrives %q: detach: %w", vmName, err)
 		}
 	}
+	if len(toAttach) == 0 {
+		return nil
+	}
+	// GUID / 世代の解決は VM ごとに 1 回 (#68 項目 1)。
+	guid, gen2, err := c.resolveDvdTarget(ctx, vmName)
+	if err != nil {
+		return err
+	}
+	// SCSI Controller の存在保証も 1 回。最大の controllerNumber で呼べば 0..max がそろう。
+	if gen2 {
+		maxCN := 0
+		for _, d := range toAttach {
+			if d.ControllerNumber > maxCN {
+				maxCN = d.ControllerNumber
+			}
+		}
+		if err := c.ensureScsiController(ctx, guid, int32(maxCN)); err != nil {
+			return err
+		}
+	}
 	for _, d := range toAttach {
-		if err := c.CreateVmDvdDrive(ctx, vmName, d.ControllerNumber, d.ControllerLocation, d.Path, d.ResourcePoolName); err != nil {
+		if err := c.attachDvdByGUID(ctx, vmName, guid, gen2, d.ControllerNumber, d.ControllerLocation, d.Path); err != nil {
 			return err
 		}
 	}

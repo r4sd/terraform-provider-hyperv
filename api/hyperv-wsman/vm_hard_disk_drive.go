@@ -110,31 +110,21 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 		maximumIops, minimumIops, qosPolicyId, overrideCacheAttributes); err != nil {
 		return err
 	}
-	wsmanCT, err := wsmanControllerType(controllerType)
-	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
-	}
 	guid, err := c.resolveVMGUID(ctx, vmName)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
 	}
-	// go-wsman で作った VM はシェル状態で SCSI Controller を持たない (#88) ため、SCSI
-	// アタッチ前に対象 Controller の存在を保証する。IDE は Gen1 に既定で存在するので対象外。
 	if controllerType == api.ControllerType_Scsi {
 		if err := c.ensureScsiController(ctx, guid, controllerNumber); err != nil {
 			return err
 		}
 	}
-	// AttachVHD は内部で Drive/Storage の非同期 Job 完了まで待つ (go-wsman 側)。
-	if _, err := c.WsmanClient.AttachVHD(ctx, guid, hyperv.AttachVHDOptions{
-		ControllerType:     wsmanCT,
-		ControllerNumber:   int(controllerNumber),
-		ControllerLocation: int(controllerLocation),
+	return c.attachHardDiskByGUID(ctx, vmName, guid, api.VmHardDiskDrive{
+		ControllerType:     controllerType,
+		ControllerNumber:   controllerNumber,
+		ControllerLocation: controllerLocation,
 		Path:               path,
-	}); err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
-	}
-	return nil
+	})
 }
 
 // ensureScsiController は controllerNumber 番目の SCSI Controller が存在することを保証する。
@@ -277,10 +267,16 @@ func (c *ClientConfig) UpdateVmHardDiskDrive(
 // Controller 種別変更も「旧 Detach + 新 Attach」で自然に処理される。冪等。
 func (c *ClientConfig) CreateOrUpdateVmHardDiskDrives(ctx context.Context, vmName string, hardDiskDrives []api.VmHardDiskDrive) error {
 	// 未対応オプションは適用前に全件チェックし、部分適用を避ける。
+	//
+	// controller_type も**ここで**弾く。attach 側で初めて弾くと、先行する detach だけが
+	// 実機に適用されて部分適用・state 乖離になる (DVD 側 validateDvdOptions と同じ原則)。
 	for _, d := range hardDiskDrives {
 		if err := unsupportedHardDiskOptions(d.DiskNumber, d.ResourcePoolName, d.SupportPersistentReservations,
 			d.MaximumIops, d.MinimumIops, d.QosPolicyId, d.OverrideCacheAttributes); err != nil {
 			return err
+		}
+		if _, err := wsmanControllerType(d.ControllerType); err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmHardDiskDrives %q: %w", vmName, err)
 		}
 	}
 	current, err := c.getHardDiskDriveRefs(ctx, vmName)
@@ -293,12 +289,60 @@ func (c *ClientConfig) CreateOrUpdateVmHardDiskDrives(ctx context.Context, vmNam
 			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmHardDiskDrives %q: detach: %w", vmName, err)
 		}
 	}
+	if len(toAttach) == 0 {
+		return nil
+	}
+	// VM GUID の解決は VM ごとに 1 回 (#68 項目 1)。attach ごとに公開 CreateVmHardDiskDrive を
+	// 呼ぶと Msvm_ComputerSystem の列挙が N 回走る。
+	guid, err := c.resolveVMGUID(ctx, vmName)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmHardDiskDrives %q: %w", vmName, err)
+	}
+	// SCSI Controller の存在保証も 1 回。最大の controllerNumber で呼べば 0..max がそろう。
+	maxCN := int32(-1)
 	for _, d := range toAttach {
-		if err := c.CreateVmHardDiskDrive(ctx, vmName, d.ControllerType, d.ControllerNumber, d.ControllerLocation,
-			d.Path, d.DiskNumber, d.ResourcePoolName, d.SupportPersistentReservations, d.MaximumIops, d.MinimumIops,
-			d.QosPolicyId, d.OverrideCacheAttributes); err != nil {
+		if d.ControllerType == api.ControllerType_Scsi && d.ControllerNumber > maxCN {
+			maxCN = d.ControllerNumber
+		}
+	}
+	if maxCN >= 0 {
+		if err := c.ensureScsiController(ctx, guid, maxCN); err != nil {
 			return err
 		}
+	}
+	for _, d := range toAttach {
+		if err := c.attachHardDiskByGUID(ctx, vmName, guid, d); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// attachHardDiskByGUID は解決済みの GUID を使って VHD を 1 本アタッチする。
+//
+// vmName はエラーメッセージ用 (go-wsman へは guid を渡す)。
+//
+// **SCSI Controller の存在保証 (ensureScsiController) は呼び出し側の責任。**
+// ensureScsiController は `for len(controllers) <= controllerNumber` で 0..controllerNumber を
+// まとめて作るので、**最大の controllerNumber で 1 回呼べば全 attach を満たす**。
+// ここに置くと attach ごとに ListSCSIControllers が走る (#68 項目 1)。
+func (c *ClientConfig) attachHardDiskByGUID(
+	ctx context.Context,
+	vmName, guid string,
+	d api.VmHardDiskDrive,
+) error {
+	wsmanCT, err := wsmanControllerType(d.ControllerType)
+	if err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
+	}
+	// AttachVHD は内部で Drive/Storage の非同期 Job 完了まで待つ (go-wsman 側)。
+	if _, err := c.WsmanClient.AttachVHD(ctx, guid, hyperv.AttachVHDOptions{
+		ControllerType:     wsmanCT,
+		ControllerNumber:   int(d.ControllerNumber),
+		ControllerLocation: int(d.ControllerLocation),
+		Path:               d.Path,
+	}); err != nil {
+		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
 	}
 	return nil
 }

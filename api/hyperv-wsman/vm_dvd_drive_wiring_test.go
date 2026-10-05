@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/r4sd/go-wsman/hyperv"
+	"github.com/taliesins/terraform-provider-hyperv/api"
 )
 
 // CreateVmDvdDrive の **path の有無でプリミティブを選ぶ配線** を httptest で固める。
@@ -64,7 +65,13 @@ func dvdWiringServer(t *testing.T) (*ClientConfig, *[]string, func()) {
 		case action == "Pull" && res == "Msvm_VirtualSystemSettingData":
 			_, _ = w.Write([]byte(dvdWiringSettingDataPull()))
 		case action == "Pull" && res == "Msvm_ResourceAllocationSettingData":
+			// ListIDEControllers / ListDvdDrives / ListSCSIControllers が同じクラスを引く。
+			// go-wsman 側で ResourceSubType によるフィルタがかかるので、IDE コントローラ 1 件を
+			// 返せば「IDE は 1 本、DVD と SCSI は 0 件」として解釈される。
 			_, _ = w.Write([]byte(dvdWiringIDEControllerPull()))
+		case action == "Pull" && res == "Msvm_StorageAllocationSettingData":
+			// 既存のメディアは無し (ListAttachedStorage が空を返す)。
+			_, _ = w.Write([]byte(dvdWiringEmptyStoragePull()))
 		case strings.HasSuffix(action, "AddResourceSettings"):
 			_, _ = w.Write([]byte(dvdWiringAddResponse()))
 		case action == "Get" && res == "Msvm_ConcreteJob":
@@ -184,5 +191,81 @@ func dvdWiringJobCompleted() string {
 	return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ConcreteJob">
   <s:Header><a:Action>http://schemas.xmlsoap.org/ws/2004/09/transfer/GetResponse</a:Action></s:Header>
   <s:Body><p:Msvm_ConcreteJob><p:InstanceID>job-1</p:InstanceID><p:JobState>7</p:JobState></p:Msvm_ConcreteJob></s:Body>
+</s:Envelope>`
+}
+
+// TestCreateOrUpdateVmDvdDrives_ResolveOnce は複数 attach でも VM GUID / 世代の解決が
+// **1 回で済む**ことを検証する (#68 項目 1)。
+//
+// 以前は attach ごとに公開 CreateVmDvdDrive を呼んでいたため、
+// resolveVMGUID (Msvm_ComputerSystem の Enumerate+Pull) と
+// vmIsGen2 (Msvm_VirtualSystemSettingData の Enumerate+Pull) が N 回走っていた。
+//
+// 回数で見る。実装を見るのではなく**送ったリクエストの数**を数えることで、
+// 「解決結果を引き回している」ことを外から固定できる。
+func TestCreateOrUpdateVmDvdDrives_ResolveOnce(t *testing.T) {
+	cc, bodies, done := dvdWiringServer(t)
+	defer done()
+
+	// 2 本の ISO を別 location に attach する。
+	err := cc.CreateOrUpdateVmDvdDrives(context.Background(), "vm1", []api.VmDvdDrive{
+		{ControllerNumber: 0, ControllerLocation: 0, Path: `H:\ISO\a.iso`},
+		{ControllerNumber: 0, ControllerLocation: 1, Path: `H:\ISO\b.iso`},
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateVmDvdDrives: %v", err)
+	}
+
+	// Msvm_ComputerSystem の Pull = resolveVMGUID の回数。
+	// getDvdDriveRefs で 1 回 + attach 側で 1 回 = 2 回。attach ごとに増えないこと。
+	// (集約前は attach 2 本で 3 回だった)
+	const wantCSPulls = 2
+	if got := dvdCountPulls(*bodies, "Msvm_ComputerSystem"); got != wantCSPulls {
+		t.Errorf("resolveVMGUID 由来の Pull が %d 回 (want %d)。attach ごとに再解決していないか", got, wantCSPulls)
+	}
+
+	// Msvm_VirtualSystemSettingData の Pull は 2 つの出どころが混ざる:
+	//
+	//	vmIsGen2                      1 回 (VM ごと。集約前は attach ごとに 1 回)
+	//	go-wsman の AddResourceSettings 4 回 (attach ごとに drive + storage の 2 回。provider からは減らせない)
+	//
+	// 合計 5 回。vmIsGen2 が attach ごとに戻ると 6 回になる。
+	// **go-wsman 内部の分と分離できないので、合計を固定して退行を見る。**
+	const wantSDPulls = 5
+	if got := dvdCountPulls(*bodies, "Msvm_VirtualSystemSettingData"); got != wantSDPulls {
+		t.Errorf("Msvm_VirtualSystemSettingData の Pull が %d 回 (want %d = vmIsGen2 1 + AddResourceSettings 4)。"+
+			"6 回なら vmIsGen2 が attach ごとに走っている", got, wantSDPulls)
+	}
+	// 2 本とも attach されていること (回数だけ減って中身が欠けていないか)。
+	all := strings.Join(*bodies, "\n")
+	for _, iso := range []string{`H:\ISO\a.iso`, `H:\ISO\b.iso`} {
+		if !strings.Contains(all, iso) {
+			t.Errorf("%s を attach していない", iso)
+		}
+	}
+}
+
+// dvdCountPulls は指定クラスの Pull リクエスト数を数える。
+func dvdCountPulls(bodies []string, class string) int {
+	n := 0
+	for _, b := range bodies {
+		act, res := "", ""
+		if m := dvdActionRe.FindStringSubmatch(b); m != nil {
+			act = dvdLastSeg(m[1])
+		}
+		if m := dvdResURIRe.FindStringSubmatch(b); m != nil {
+			res = dvdLastSeg(m[1])
+		}
+		if act == "Pull" && res == class {
+			n++
+		}
+	}
+	return n
+}
+
+func dvdWiringEmptyStoragePull() string {
+	return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:e="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+  <s:Header><a:Action>http://schemas.xmlsoap.org/ws/2004/09/enumeration/PullResponse</a:Action></s:Header>
+  <s:Body><e:PullResponse><e:Items/><e:EndOfSequence/></e:PullResponse></s:Body>
 </s:Envelope>`
 }

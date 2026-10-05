@@ -70,14 +70,41 @@ func (c *ClientConfig) CreateVmDvdDrive(
 	if err := validateDvdOptions(path, resourcePoolName); err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
 	}
-	guid, err := c.resolveVMGUID(ctx, vmName)
+	guid, gen2, err := c.resolveDvdTarget(ctx, vmName)
 	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
+		return err
 	}
-	gen2, err := c.vmIsGen2(ctx, guid)
+	return c.attachDvdByGUID(ctx, vmName, guid, gen2, controllerNumber, controllerLocation, path)
+}
+
+// resolveDvdTarget は DVD 操作に必要な VM GUID と世代をまとめて解決する。
+//
+// どちらも **VM ごとに 1 回で足りる**。attach ごとに解決すると
+// Msvm_ComputerSystem と Msvm_VirtualSystemSettingData の列挙が N 回走る (#68 項目 1)。
+func (c *ClientConfig) resolveDvdTarget(ctx context.Context, vmName string) (guid string, gen2 bool, err error) {
+	guid, err = c.resolveVMGUID(ctx, vmName)
 	if err != nil {
-		return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q: %w", vmName, err)
+		return "", false, fmt.Errorf("hyperv-wsman: DVD 操作 %q: %w", vmName, err)
 	}
+	gen2, err = c.vmIsGen2(ctx, guid)
+	if err != nil {
+		return "", false, fmt.Errorf("hyperv-wsman: DVD 操作 %q: %w", vmName, err)
+	}
+	return guid, gen2, nil
+}
+
+// attachDvdByGUID は解決済みの GUID / 世代を使って DVD ドライブを 1 本追加する。
+//
+// vmName はエラーメッセージ用 (go-wsman へは guid を渡す)。
+// ensureScsiController は controllerNumber ごとに要るのでここに残す (冪等)。
+func (c *ClientConfig) attachDvdByGUID(
+	ctx context.Context,
+	vmName, guid string,
+	gen2 bool,
+	controllerNumber int,
+	controllerLocation int,
+	path string,
+) error {
 	ct := hyperv.ControllerTypeIDE
 	if gen2 {
 		// go-wsman で作った Gen2 VM はシェル状態で SCSI Controller を持たない (#88) ため保証する。
@@ -181,8 +208,16 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmDvdDrives %q: detach: %w", vmName, err)
 		}
 	}
+	if len(toAttach) == 0 {
+		return nil
+	}
+	// GUID / 世代の解決は VM ごとに 1 回 (#68 項目 1)。
+	guid, gen2, err := c.resolveDvdTarget(ctx, vmName)
+	if err != nil {
+		return err
+	}
 	for _, d := range toAttach {
-		if err := c.CreateVmDvdDrive(ctx, vmName, d.ControllerNumber, d.ControllerLocation, d.Path, d.ResourcePoolName); err != nil {
+		if err := c.attachDvdByGUID(ctx, vmName, guid, gen2, d.ControllerNumber, d.ControllerLocation, d.Path); err != nil {
 			return err
 		}
 	}

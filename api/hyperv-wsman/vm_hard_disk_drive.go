@@ -114,6 +114,11 @@ func (c *ClientConfig) CreateVmHardDiskDrive(
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
 	}
+	if controllerType == api.ControllerType_Scsi {
+		if err := c.ensureScsiController(ctx, guid, controllerNumber); err != nil {
+			return err
+		}
+	}
 	return c.attachHardDiskByGUID(ctx, vmName, guid, api.VmHardDiskDrive{
 		ControllerType:     controllerType,
 		ControllerNumber:   controllerNumber,
@@ -293,6 +298,18 @@ func (c *ClientConfig) CreateOrUpdateVmHardDiskDrives(ctx context.Context, vmNam
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmHardDiskDrives %q: %w", vmName, err)
 	}
+	// SCSI Controller の存在保証も 1 回。最大の controllerNumber で呼べば 0..max がそろう。
+	maxCN := int32(-1)
+	for _, d := range toAttach {
+		if d.ControllerType == api.ControllerType_Scsi && d.ControllerNumber > maxCN {
+			maxCN = d.ControllerNumber
+		}
+	}
+	if maxCN >= 0 {
+		if err := c.ensureScsiController(ctx, guid, maxCN); err != nil {
+			return err
+		}
+	}
 	for _, d := range toAttach {
 		if err := c.attachHardDiskByGUID(ctx, vmName, guid, d); err != nil {
 			return err
@@ -304,7 +321,11 @@ func (c *ClientConfig) CreateOrUpdateVmHardDiskDrives(ctx context.Context, vmNam
 // attachHardDiskByGUID は解決済みの GUID を使って VHD を 1 本アタッチする。
 //
 // vmName はエラーメッセージ用 (go-wsman へは guid を渡す)。
-// ensureScsiController は controllerNumber ごとに要るのでここに残す (冪等)。
+//
+// **SCSI Controller の存在保証 (ensureScsiController) は呼び出し側の責任。**
+// ensureScsiController は `for len(controllers) <= controllerNumber` で 0..controllerNumber を
+// まとめて作るので、**最大の controllerNumber で 1 回呼べば全 attach を満たす**。
+// ここに置くと attach ごとに ListSCSIControllers が走る (#68 項目 1)。
 func (c *ClientConfig) attachHardDiskByGUID(
 	ctx context.Context,
 	vmName, guid string,
@@ -313,13 +334,6 @@ func (c *ClientConfig) attachHardDiskByGUID(
 	wsmanCT, err := wsmanControllerType(d.ControllerType)
 	if err != nil {
 		return fmt.Errorf("hyperv-wsman: CreateVmHardDiskDrive %q: %w", vmName, err)
-	}
-	// go-wsman で作った VM はシェル状態で SCSI Controller を持たない (#88) ため、SCSI
-	// アタッチ前に対象 Controller の存在を保証する。IDE は Gen1 に既定で存在するので対象外。
-	if d.ControllerType == api.ControllerType_Scsi {
-		if err := c.ensureScsiController(ctx, guid, d.ControllerNumber); err != nil {
-			return err
-		}
 	}
 	// AttachVHD は内部で Drive/Storage の非同期 Job 完了まで待つ (go-wsman 側)。
 	if _, err := c.WsmanClient.AttachVHD(ctx, guid, hyperv.AttachVHDOptions{

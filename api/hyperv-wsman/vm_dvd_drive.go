@@ -74,6 +74,11 @@ func (c *ClientConfig) CreateVmDvdDrive(
 	if err != nil {
 		return err
 	}
+	if gen2 {
+		if err := c.ensureScsiController(ctx, guid, int32(controllerNumber)); err != nil {
+			return err
+		}
+	}
 	return c.attachDvdByGUID(ctx, vmName, guid, gen2, controllerNumber, controllerLocation, path)
 }
 
@@ -96,7 +101,11 @@ func (c *ClientConfig) resolveDvdTarget(ctx context.Context, vmName string) (gui
 // attachDvdByGUID は解決済みの GUID / 世代を使って DVD ドライブを 1 本追加する。
 //
 // vmName はエラーメッセージ用 (go-wsman へは guid を渡す)。
-// ensureScsiController は controllerNumber ごとに要るのでここに残す (冪等)。
+//
+// **SCSI Controller の存在保証 (ensureScsiController) は呼び出し側の責任。**
+// ensureScsiController は `for len(controllers) <= controllerNumber` で 0..controllerNumber を
+// まとめて作るので、**最大の controllerNumber で 1 回呼べば全 attach を満たす**。
+// ここに置くと attach ごとに ListSCSIControllers が走る (#68 項目 1)。
 func (c *ClientConfig) attachDvdByGUID(
 	ctx context.Context,
 	vmName, guid string,
@@ -107,11 +116,9 @@ func (c *ClientConfig) attachDvdByGUID(
 ) error {
 	ct := hyperv.ControllerTypeIDE
 	if gen2 {
-		// go-wsman で作った Gen2 VM はシェル状態で SCSI Controller を持たない (#88) ため保証する。
+		// go-wsman で作った Gen2 VM はシェル状態で SCSI Controller を持たない (#88)。
+		// 存在保証は呼び出し側で済んでいる前提。
 		ct = hyperv.ControllerTypeSCSI
-		if err := c.ensureScsiController(ctx, guid, int32(controllerNumber)); err != nil {
-			return err
-		}
 	}
 	// メディアなし (path 空) は Drive だけを追加する (#67)。AttachDVD は storage の紐付けまで
 	// 行うので、空メディアには使えない (go-wsman 側で空 Path を拒否する)。
@@ -215,6 +222,18 @@ func (c *ClientConfig) CreateOrUpdateVmDvdDrives(ctx context.Context, vmName str
 	guid, gen2, err := c.resolveDvdTarget(ctx, vmName)
 	if err != nil {
 		return err
+	}
+	// SCSI Controller の存在保証も 1 回。最大の controllerNumber で呼べば 0..max がそろう。
+	if gen2 {
+		maxCN := 0
+		for _, d := range toAttach {
+			if d.ControllerNumber > maxCN {
+				maxCN = d.ControllerNumber
+			}
+		}
+		if err := c.ensureScsiController(ctx, guid, int32(maxCN)); err != nil {
+			return err
+		}
 	}
 	for _, d := range toAttach {
 		if err := c.attachDvdByGUID(ctx, vmName, guid, gen2, d.ControllerNumber, d.ControllerLocation, d.Path); err != nil {

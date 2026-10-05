@@ -269,3 +269,64 @@ func dvdWiringEmptyStoragePull() string {
   <s:Body><e:PullResponse><e:Items/><e:EndOfSequence/></e:PullResponse></s:Body>
 </s:Envelope>`
 }
+
+// TestCreateOrUpdateVmHardDiskDrives_ResolveOnce は disk 側でも VM GUID の解決が
+// attach ごとに増えないことを検証する (#68 項目 1)。
+//
+// DVD と同じ dispatcher を使う。disk の attach は AttachVHD (drive + storage の
+// AddResourceSettings) なので、Msvm_VirtualSystemSettingData の Pull は
+// go-wsman 内部の分だけになる (disk には vmIsGen2 相当が無い)。
+func TestCreateOrUpdateVmHardDiskDrives_ResolveOnce(t *testing.T) {
+	cc, bodies, done := dvdWiringServer(t)
+	defer done()
+
+	err := cc.CreateOrUpdateVmHardDiskDrives(context.Background(), "vm1", []api.VmHardDiskDrive{
+		// DiskNumber はゼロ値ではなく「未指定」のセンチネルを渡す
+		// (ゼロ値だと unsupportedHardDiskOptions が パススルー物理ディスク指定として弾く)。
+		{ControllerType: api.ControllerType_Ide, ControllerNumber: 0, ControllerLocation: 0,
+			Path: `D:\VMs\a.vhdx`, DiskNumber: hardDiskDiskNumberUnset},
+		{ControllerType: api.ControllerType_Ide, ControllerNumber: 0, ControllerLocation: 1,
+			Path: `D:\VMs\b.vhdx`, DiskNumber: hardDiskDiskNumberUnset},
+	})
+	if err != nil {
+		t.Fatalf("CreateOrUpdateVmHardDiskDrives: %v", err)
+	}
+
+	// getHardDiskDriveRefs で 1 回 + attach 側で 1 回 = 2 回。attach ごとに増えないこと。
+	// (集約前は attach 2 本で 3 回)
+	const wantCSPulls = 2
+	if got := dvdCountPulls(*bodies, "Msvm_ComputerSystem"); got != wantCSPulls {
+		t.Errorf("resolveVMGUID 由来の Pull が %d 回 (want %d)。attach ごとに再解決していないか", got, wantCSPulls)
+	}
+	// 2 本とも attach されていること。
+	all := strings.Join(*bodies, "\n")
+	for _, vhd := range []string{`D:\VMs\a.vhdx`, `D:\VMs\b.vhdx`} {
+		if !strings.Contains(all, vhd) {
+			t.Errorf("%s を attach していない", vhd)
+		}
+	}
+}
+
+// TestCreateOrUpdateVmHardDiskDrives_RejectsBadControllerTypeBeforeDetach は
+// 不正な controller_type が **detach より前に** 弾かれることを検証する。
+//
+// attach 側で初めて弾くと、先行する detach だけが実機に適用されて部分適用になる。
+func TestCreateOrUpdateVmHardDiskDrives_RejectsBadControllerTypeBeforeDetach(t *testing.T) {
+	cc, bodies, done := dvdWiringServer(t)
+	defer done()
+
+	err := cc.CreateOrUpdateVmHardDiskDrives(context.Background(), "vm1", []api.VmHardDiskDrive{
+		{ControllerType: api.ControllerType(99), ControllerNumber: 0, ControllerLocation: 0,
+			Path: `D:\VMs\a.vhdx`, DiskNumber: hardDiskDiskNumberUnset},
+	})
+	if err == nil {
+		t.Fatal("不正な controller_type がエラーにならない")
+	}
+	if !strings.Contains(err.Error(), "unsupported controller type") {
+		t.Errorf("controller_type が原因と分かるエラーでない: %v", err)
+	}
+	// **1 件もリクエストを送っていないこと。** 送っていたら detach が走る余地がある。
+	if len(*bodies) != 0 {
+		t.Errorf("検証前にリクエストを %d 件送っている (部分適用の余地がある)", len(*bodies))
+	}
+}

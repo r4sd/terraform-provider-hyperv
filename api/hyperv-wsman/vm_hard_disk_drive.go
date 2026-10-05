@@ -262,10 +262,16 @@ func (c *ClientConfig) UpdateVmHardDiskDrive(
 // Controller 種別変更も「旧 Detach + 新 Attach」で自然に処理される。冪等。
 func (c *ClientConfig) CreateOrUpdateVmHardDiskDrives(ctx context.Context, vmName string, hardDiskDrives []api.VmHardDiskDrive) error {
 	// 未対応オプションは適用前に全件チェックし、部分適用を避ける。
+	//
+	// controller_type も**ここで**弾く。attach 側で初めて弾くと、先行する detach だけが
+	// 実機に適用されて部分適用・state 乖離になる (DVD 側 validateDvdOptions と同じ原則)。
 	for _, d := range hardDiskDrives {
 		if err := unsupportedHardDiskOptions(d.DiskNumber, d.ResourcePoolName, d.SupportPersistentReservations,
 			d.MaximumIops, d.MinimumIops, d.QosPolicyId, d.OverrideCacheAttributes); err != nil {
 			return err
+		}
+		if _, err := wsmanControllerType(d.ControllerType); err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateOrUpdateVmHardDiskDrives %q: %w", vmName, err)
 		}
 	}
 	current, err := c.getHardDiskDriveRefs(ctx, vmName)

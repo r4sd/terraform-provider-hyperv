@@ -195,8 +195,12 @@ func TestMapDvdDriveRefs_EmptyMedia(t *testing.T) {
 			HostResource: `D:\VMs\boot.vhdx`, Parent: withISO.InstanceID},
 	}
 
+	// ⚠️ **入力順を逆 (empty, withISO) にする。** Drive 起点になったことで
+	// WS-Man の列挙順がそのまま refs の順に乗るようになり、DeleteVmDvdDrive(index) の
+	// index 安定性は sortDvdDriveRefs だけが守る。ソート済みの順で渡すと
+	// sortDvdDriveRefs を削除する変異が検出できない。
 	got := mapDvdDriveRefs(vm, storages,
-		[]*hyperv.Msvm_ResourceAllocationSettingData{withISO, empty},
+		[]*hyperv.Msvm_ResourceAllocationSettingData{empty, withISO},
 		[]*hyperv.Msvm_ResourceAllocationSettingData{ide0, ide1},
 		nil,
 	)
@@ -260,5 +264,62 @@ func TestMapDvdDriveRefs_VHDOnDvdDriveIgnored(t *testing.T) {
 	}
 	if got[0].storageInstanceID != "" {
 		t.Errorf("VHD の storage を紐付けている: %q", got[0].storageInstanceID)
+	}
+}
+
+// TestMapDvdDriveRefs_MultipleMedia は 1 ドライブに複数の CD/DVD storage が紐づいた場合に
+// InstanceID 最小のものを決定的に採ることを検証する。
+//
+// 実機では起きない形だが、起きたときに**読み取りごとに結果が入れ替わらない**ことを固定する。
+// 入れ替わると dvdDriveKey (controller/location/path) が揺れて reconcile が
+// 無意味な detach/attach を繰り返す。
+//
+// ⚠️ **両方の入力順で同じ結果になることを見る。** 片方の順でしか試さないと
+// 「最後に勝つ」実装が通り抜ける (実際にその変異が生き残った)。
+//
+//	入力順       InstanceID 最小  最大      最後に勝つ
+//	[ISO-B, A]   ISO-A            ISO-B     ISO-A      ← 最後に勝つを検出できない
+//	[ISO-A, B]   ISO-A            ISO-B     ISO-B      ← 両方検出できる
+func TestMapDvdDriveRefs_MultipleMedia(t *testing.T) {
+	vm := "vm1"
+	ide0 := &hyperv.Msvm_ResourceAllocationSettingData{InstanceID: `Microsoft:` + vm + `\IDE-0`}
+	drive := &hyperv.Msvm_ResourceAllocationSettingData{
+		InstanceID: `Microsoft:` + vm + `\DVD-A`, Parent: ide0.InstanceID, AddressOnParent: "0",
+	}
+	isoA := &hyperv.Msvm_StorageAllocationSettingData{
+		ResourceSubType: hyperv.ResourceSubTypeVirtualCDDVDDisk,
+		HostResource:    `H:\ISO\first.iso`, Parent: drive.InstanceID,
+		InstanceID: `Microsoft:` + vm + `\ISO-A`,
+	}
+	isoB := &hyperv.Msvm_StorageAllocationSettingData{
+		ResourceSubType: hyperv.ResourceSubTypeVirtualCDDVDDisk,
+		HostResource:    `H:\ISO\second.iso`, Parent: drive.InstanceID,
+		InstanceID: `Microsoft:` + vm + `\ISO-B`,
+	}
+
+	for _, tc := range []struct {
+		name     string
+		storages []*hyperv.Msvm_StorageAllocationSettingData
+	}{
+		{"降順で渡す", []*hyperv.Msvm_StorageAllocationSettingData{isoB, isoA}},
+		{"昇順で渡す", []*hyperv.Msvm_StorageAllocationSettingData{isoA, isoB}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapDvdDriveRefs(vm, tc.storages,
+				[]*hyperv.Msvm_ResourceAllocationSettingData{drive},
+				[]*hyperv.Msvm_ResourceAllocationSettingData{ide0}, nil)
+
+			if len(got) != 1 {
+				t.Fatalf("len: got %d, want 1 (ドライブは 1 つ)", len(got))
+			}
+			if got[0].storageInstanceID != isoA.InstanceID {
+				t.Errorf("storageInstanceID: got %q, want %q (InstanceID 最小)",
+					got[0].storageInstanceID, isoA.InstanceID)
+			}
+			if got[0].dvd.Path != isoA.HostResource {
+				t.Errorf("Path: got %q, want %q (InstanceID 最小の storage)",
+					got[0].dvd.Path, isoA.HostResource)
+			}
+		})
 	}
 }

@@ -25,7 +25,7 @@ type dvdDriveRef struct {
 }
 
 // validateDvdOptions は go-wsman 経路が未対応の DVD オプションを拒否する (silent drop 回避)。
-// 現状は既定リソースプール + ISO パス指定のみサポートする。
+// 現状は既定リソースプールのみサポートする (ISO パスの有無は問わない。#67 で空メディア対応)。
 //
 // path/pool の両方をここで検証するのが重要: Update / CreateOrUpdate は破壊操作 (detach) を
 // 実行してから attach するため、未対応値の検出が attach まで遅れると「detach 済み・attach 拒否」
@@ -36,11 +36,8 @@ func validateDvdOptions(path, resourcePoolName string) error {
 			"hyperv-wsman: dvd_drive の resource_pool_name は go-wsman 経路 (HYPERV_USE_WSMAN) では未対応です。"+
 				"PowerShell 経路を使うか、既定値 %q にしてください", dvdDefaultResourcePool)
 	}
-	// 空メディア (ISO 未指定の DVD ドライブのみ追加) は go-wsman AttachDVD が storage を要求するため
-	// 現状未対応。ISO マウントに絞る。空メディア対応は v2.1 (#67)。
-	if path == "" {
-		return fmt.Errorf("hyperv-wsman: dvd_drive の ISO パス空 (メディアなし DVD) は go-wsman 経路では未対応です。空メディア対応は v2.1 (#67)")
-	}
+	// 空メディア (ISO 未指定 = メディアなし DVD ドライブ) は go-wsman AddDVDDrive で対応済 (#67)。
+	// ここでは弾かない。CreateVmDvdDrive が path の有無で AttachDVD / AddDVDDrive を選ぶ。
 	return nil
 }
 
@@ -54,7 +51,11 @@ func (c *ClientConfig) vmIsGen2(ctx context.Context, vmGUID string) (bool, error
 	return sd.VirtualSystemSubType == hyperv.VirtualSystemSubTypeGen2, nil
 }
 
-// CreateVmDvdDrive は go-wsman 経由で ISO を DVD ドライブとしてマウントする。
+// CreateVmDvdDrive は go-wsman 経由で DVD ドライブを追加する。
+//
+// path が非空なら ISO をマウントし (AttachDVD)、**空ならメディアなしドライブを作る**
+// (AddDVDDrive、#67)。PS の Add-VMDvdDrive も -Path 省略で空ドライブを作るので、
+// 経路によらず同じ結果になる。
 //
 // VmDvdDrive は controller 種別を持たないため、VM の世代からアタッチ先を決める
 // (Gen2→SCSI / Gen1→IDE)。PowerShell の Add-VMDvdDrive と同じ自動選択。
@@ -84,6 +85,18 @@ func (c *ClientConfig) CreateVmDvdDrive(
 		if err := c.ensureScsiController(ctx, guid, int32(controllerNumber)); err != nil {
 			return err
 		}
+	}
+	// メディアなし (path 空) は Drive だけを追加する (#67)。AttachDVD は storage の紐付けまで
+	// 行うので、空メディアには使えない (go-wsman 側で空 Path を拒否する)。
+	if path == "" {
+		if _, err := c.WsmanClient.AddDVDDrive(ctx, guid, hyperv.AddDVDDriveOptions{
+			ControllerType:     ct,
+			ControllerNumber:   controllerNumber,
+			ControllerLocation: controllerLocation,
+		}); err != nil {
+			return fmt.Errorf("hyperv-wsman: CreateVmDvdDrive %q (メディアなし): %w", vmName, err)
+		}
+		return nil
 	}
 	// AttachDVD は内部で Drive/Storage の非同期 Job 完了まで待つ (go-wsman 側)。
 	if _, err := c.WsmanClient.AttachDVD(ctx, guid, hyperv.AttachDVDOptions{
@@ -206,10 +219,22 @@ func (c *ClientConfig) getDvdDriveRefs(ctx context.Context, vmName string) ([]dv
 
 // mapDvdDriveRefs は go-wsman の storage/drive/controller 一覧を結合して VmDvdDrive を復元する。
 //
-// storage.Parent → dvdDrive.InstanceID、dvdDrive.Parent → controller.InstanceID の 2 段で親を辿る。
+// 🔴 **Drive (RASD) 起点で回し、storage を left join する** (#67)。
+// 以前は storage(ISO) 起点だったため、**子 SASD を持たないメディア無しドライブが
+// GetVmDvdDrives に不可視**だった。その状態でゲストが eject したり PS / Hyper-V マネージャーが
+// 空ドライブを作ると、reconcile が「現状なし」と誤認して同じ AddressOnParent へ再 attach し、
+// VMMS のアドレス衝突で apply が恒久失敗する (空ドライブは provider 経由で detach もできない)。
+//
+// dvdDrive.Parent → controller.InstanceID で親を辿り、storage.Parent → dvdDrive.InstanceID で
+// メディアを引き当てる。メディア無しは Path="" / storageInstanceID="" で表現する
+// (storageInstanceID が空なら DetachStorage は Drive 単独削除に分岐する)。
+//
 // VmDvdDrive は controller 種別を持たないが、VM は Gen1(IDE のみ)/Gen2(SCSI のみ) で種別が一意に
 // 決まるため、Controller の一覧内 index をそのまま controller 番号として報告できる。
-// ISO (Virtual CD/DVD Disk) のみ対象とし、VHD は除外する。結果は (番号, 位置) で安定ソート。
+// メディアとして採るのは ISO (Virtual CD/DVD Disk) のみで、DVD ドライブに VHD が紐づいていても
+// 無視する (Path は空のまま)。結果は (番号, 位置) で安定ソート。
+//
+// dvdDrives は呼び出し側 (go-wsman の ListDvdDrives) が Synthetic DVD Drive で絞っている。
 func mapDvdDriveRefs(
 	vmName string,
 	storages []*hyperv.Msvm_StorageAllocationSettingData,
@@ -233,15 +258,26 @@ func mapDvdDriveRefs(
 		ctrlByID[cc.InstanceID] = i
 	}
 
-	refs := make([]dvdDriveRef, 0, len(storages))
-	for _, s := range storages {
-		if s.ResourceSubType != hyperv.ResourceSubTypeVirtualCDDVDDisk {
-			continue // VHD/その他は対象外
+	// drive InstanceID → その drive に紐づく ISO。メディア無しはここに現れない。
+	// 1 ドライブに複数の CD/DVD storage が付くことは実機では起きないが、起きた場合に
+	// 読み取りごとに結果が入れ替わらないよう InstanceID 最小のものを採る (決定的順序)。
+	mediaByDrive := make(map[string]*hyperv.Msvm_StorageAllocationSettingData, len(storages))
+	for _, st := range storages {
+		if st.ResourceSubType != hyperv.ResourceSubTypeVirtualCDDVDDisk {
+			continue // DVD ドライブに紐づく VHD 等はメディアとして採らない
 		}
-		drive := driveByID[matchRefKey(s.Parent, driveByID)]
-		if drive == nil {
+		key := matchRefKey(st.Parent, driveByID)
+		if key == "" {
 			continue // 親 DVD Drive が特定できない
 		}
+		if cur, ok := mediaByDrive[key]; ok && cur.InstanceID <= st.InstanceID {
+			continue
+		}
+		mediaByDrive[key] = st
+	}
+
+	refs := make([]dvdDriveRef, 0, len(dvdDrives))
+	for _, drive := range dvdDrives {
 		number, ok := ctrlByID[matchRefKey(drive.Parent, ctrlByID)]
 		if !ok {
 			continue // 親 Controller が特定できない
@@ -251,14 +287,20 @@ func mapDvdDriveRefs(
 		if err != nil {
 			continue
 		}
+		// メディア無しは Path="" / storageInstanceID="" のまま。
+		var path, storageID string
+		if st := mediaByDrive[drive.InstanceID]; st != nil {
+			path = st.HostResource
+			storageID = st.InstanceID
+		}
 		refs = append(refs, dvdDriveRef{
 			driveInstanceID:   drive.InstanceID,
-			storageInstanceID: s.InstanceID,
+			storageInstanceID: storageID,
 			dvd: api.VmDvdDrive{
 				VmName:             vmName,
 				ControllerNumber:   number,
 				ControllerLocation: location,
-				Path:               s.HostResource,
+				Path:               path,
 				ResourcePoolName:   dvdDefaultResourcePool,
 			},
 		})

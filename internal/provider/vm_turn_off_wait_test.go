@@ -25,6 +25,9 @@ type fakeVmStatusClient struct {
 	getErr    error
 	updateErr error
 
+	// getDelay は GetVmStatus 自体が時間を食うケース (WinRM の往復) を表現する。
+	getDelay time.Duration
+
 	// updateDelay / stateAfterUpdate で「停止発行が長くかかって成功した」を表現する。
 	updateDelay      time.Duration
 	stateAfterUpdate *api.VmState
@@ -42,6 +45,9 @@ type fakeUpdateArgs struct {
 func (f *fakeVmStatusClient) GetVmStatus(_ context.Context, _ string) (api.VmStatus, error) {
 	if f.getErr != nil {
 		return api.VmStatus{}, f.getErr
+	}
+	if f.getDelay > 0 {
+		time.Sleep(f.getDelay)
 	}
 	i := f.calls
 	f.calls++
@@ -352,6 +358,10 @@ func TestWaitForVmOff_TimeoutMessageDistinguishesStoppable(t *testing.T) {
 	if !strings.Contains(errRun.Error(), "停止要求は発行した") {
 		t.Errorf("発行した旨が文面に無い: %v", errRun)
 	}
+	// 🔴 文面の前提そのものを見る。発行ゼロで「発行した」と書いていたら嘘になる。
+	if len(fRun.updateArgs) == 0 {
+		t.Error("「停止要求は発行した」と書いているのに一度も発行していない")
+	}
 
 	// 発行しない状態: 待っても変わらない旨
 	fSaved := &fakeVmStatusClient{states: []api.VmState{api.VmState_Saved}}
@@ -402,5 +412,89 @@ func TestWaitForVmOff_PassesRawWaitArgsDownstream(t *testing.T) {
 				t.Error("turnOff=true を渡している (旧実装は false)")
 			}
 		})
+	}
+}
+
+// TestWaitForVmOff_IssuesStopEvenWhenDeadlineAlreadyPassed は、**1 回目のポーリングで
+// 既に deadline を超えていても停止を発行する**ことを検証する。
+//
+// 🔴 deadline の判定を発行の前に移したとき、`GetVmStatus` の往復が timeout より
+// 長いと **発行ゼロのままエラー**になるパスが生まれた。schema に ValidateFunc が
+// 無いので timeout=1 や 0 は設定できてしまう。旧実装は必ず 1 回は発行していたので、
+// 発行しないのは挙動変更。
+func TestWaitForVmOff_IssuesStopEvenWhenDeadlineAlreadyPassed(t *testing.T) {
+	t.Run("発行して成功する", func(t *testing.T) {
+		off := api.VmState_Off
+		f := &fakeVmStatusClient{
+			states:           []api.VmState{api.VmState_Running},
+			getDelay:         1100 * time.Millisecond, // timeout より長い
+			stateAfterUpdate: &off,
+		}
+		if err := waitForVmOff(context.Background(), f, "vm", 1, 1); err != nil {
+			t.Errorf("1 回目で deadline 超過でも発行して成功するはず: %v", err)
+		}
+		if len(f.updateArgs) == 0 {
+			t.Error("停止を一度も発行せずに抜けた")
+		}
+	})
+
+	t.Run("発行しても Off にならない", func(t *testing.T) {
+		f := &fakeVmStatusClient{
+			states:   []api.VmState{api.VmState_Running},
+			getDelay: 1100 * time.Millisecond,
+		}
+		err := waitForVmOff(context.Background(), f, "vm", 1, 1)
+		if err == nil {
+			t.Fatal("Off にならないので timeout するはず")
+		}
+		if len(f.updateArgs) == 0 {
+			t.Error("停止を一度も発行せずに timeout した")
+		}
+		// 文面は「発行したか」で分岐する。状態で分岐させると発行ゼロでも
+		// 「発行した」と書いてしまう。
+		if !strings.Contains(err.Error(), "停止要求は発行した") {
+			t.Errorf("発行済みなのに文面が合っていない: %v", err)
+		}
+	})
+}
+
+// TestWaitForVmOff_ReissuesStopOnEachPoll は、Off にならない間は**ポーリングごとに
+// 停止を再発行する**ことを固定する。
+//
+// 旧実装 (#181 以前の turnOffVmIfOn) がそうだったので、既存の契約として残す。
+// 「1 回だけ発行して以降は待つだけ」に変えると、発行が取りこぼされたケースで
+// 回復しなくなる。
+func TestWaitForVmOff_ReissuesStopOnEachPoll(t *testing.T) {
+	// Off にならないまま timeout させる。timeout=3 / poll=1 なので 2 回以上回る。
+	f := &fakeVmStatusClient{states: []api.VmState{api.VmState_Running}}
+	if err := waitForVmOff(context.Background(), f, "vm", 3, 1); err == nil {
+		t.Fatal("Off にならないので timeout するはず")
+	}
+	if len(f.updateArgs) < 2 {
+		t.Errorf("停止の発行が %d 回。Off にならない間は毎回発行するはず", len(f.updateArgs))
+	}
+}
+
+// TestWaitForVmOff_MessageBranchesOnIssuedNotState は、timeout の文面が
+// **発行したかどうか**で分岐し、**その時点の状態**では分岐しないことを検証する。
+//
+// 停止を発行した後に発行対象外の状態 (Saved 等) へ移ることがある。
+// 状態で分岐させると、発行済みなのに「この状態では停止要求が発行されない。
+// timeout を延ばしても変わらない」という誤った助言になる。
+func TestWaitForVmOff_MessageBranchesOnIssuedNotState(t *testing.T) {
+	// 1 周目 Running (発行する) → 2 周目 Saved (発行対象外) で timeout。
+	f := &fakeVmStatusClient{states: []api.VmState{api.VmState_Running, api.VmState_Saved}}
+	err := waitForVmOff(context.Background(), f, "vm", 1, 2)
+	if err == nil {
+		t.Fatal("Off にならないので timeout するはず")
+	}
+	if len(f.updateArgs) != 1 {
+		t.Fatalf("停止の発行が %d 回 (want 1)", len(f.updateArgs))
+	}
+	if !strings.Contains(err.Error(), "停止要求は発行した") {
+		t.Errorf("発行済みなのに状態で分岐している: %v", err)
+	}
+	if strings.Contains(err.Error(), "停止要求が発行されない") {
+		t.Errorf("発行済みなのに「発行されない」と書いている: %v", err)
 	}
 }

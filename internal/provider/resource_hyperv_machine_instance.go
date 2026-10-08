@@ -1738,6 +1738,11 @@ func resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds uint32) (timeout, poll
 //	CIM 経路         enabledStateToVmState が 2/3/6/9 以外を Other に潰すので、
 //	                 Other は停止発行の対象。実際にハングするのは Saved (6) だけ
 //
+// ⚠️ **Critical 系の即エラーも PS 経路だけに効く。** CIM 経路では Critical の値が
+// ここに届かない (EnabledState ではなく HealthState / OperationalStatus 側の情報で、
+// enabledStateToVmState が Other に潰す)。CIM では Critical な VM も Other として
+// 停止が発行され、下流の安定待ちが timeout して遅れてエラーになる。
+//
 // **`Saved` は普通に起きる。** `Save-VM` した VM に対して `notes` 等の変更を apply すると
 // `hasChangesThatRequireVmToBeOff` から呼ばれてここに入る。
 //
@@ -1752,12 +1757,24 @@ func resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds uint32) (timeout, poll
 // (旧実装は発行後に再取得していたので成功していた)。
 // そのため **deadline の判定は発行の前**に置き、必ず取り直した状態で判定する。
 //
+// # 最低 1 回は停止を発行する
+//
+// 🔴 deadline の判定を発行の前に置くと、**1 回目のポーリングで既に超過している**
+// ケース (GetVmStatus の往復が timeout より長い。schema に ValidateFunc が無いので
+// timeout=1 や 0 を設定できる) で、停止を一度も発行せずにエラーを返しうる。
+// 旧実装は必ず 1 回は発行してから抜けていたので、それは挙動変更になる。
+//
+// そこで `issued` を持ち、**発行する状態なのに一度も発行していない間は deadline で
+// 抜けない**。エラー文面も (状態ではなく) `issued` で分岐させる。
+// 状態が発行対象でなければ `issued` は立たないが、その場合は 1 回目で抜けてよい
+// (誰も Off にしないので待っても変わらない)。
+//
 // # 停止を発行する状態の集合は変えていない
 //
 // `Saved` / `FastSaved` を発行対象に入れるのが筋に見えるが、**挙動変更になるので
-// 本修正の範囲外**とした。なお **PS 経路の `Set-VMState` は Saved→Off を throw する**
-// (TurnOffVM にフォールバックするのは CIM 側だけ) ので、集合を広げるなら
-// PS 側の対応も要る。#180 で追跡。
+// 本修正の範囲外**とした。なお PS 経路のテンプレート (`updateVmStatusTemplate`) は
+// Running / Paused 以外から Off への要求を throw する (TurnOffVM にフォールバックするのは
+// CIM 側だけ) ので、集合を広げるなら PS 側の対応も要る。#180 で追跡。
 //
 // # ctx を見る
 //
@@ -1771,6 +1788,9 @@ func waitForVmOff(
 ) error {
 	timeout, pollPeriod := resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds)
 	deadline := time.Now().Add(timeout)
+	// issued は停止を一度でも発行したか。エラー文面の分岐と、
+	// 「最低 1 回は発行する」の保証に使う。
+	issued := false
 
 	for {
 		vmState, err := client.GetVmStatus(ctx, name)
@@ -1790,8 +1810,12 @@ func waitForVmOff(
 
 		// 🔴 **発行の前に判定する。** 発行は同期で長くかかるので、発行後に
 		// 古い状態で判定すると「長引いたが成功した」ケースを誤って失敗にする。
-		if time.Now().After(deadline) {
-			if stoppable {
+		//
+		// ただし `issued || !stoppable` を条件にする。発行する状態なのに一度も
+		// 発行していない間は抜けない (1 回目のポーリングで既に deadline を
+		// 超えているケースで、発行ゼロのまま失敗させないため)。
+		if time.Now().After(deadline) && (issued || !stoppable) {
+			if issued {
 				return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q did not turn off within %v "+
 					"(last observed state: %s (%d))。停止要求は発行したが Off にならなかった。"+
 					"wait_for_state_timeout を延ばすか、ゲスト OS 側の停止を確認すること",
@@ -1805,12 +1829,16 @@ func waitForVmOff(
 
 		if stoppable {
 			// timeoutSeconds / pollPeriodSeconds は**解決前の生値**を渡す。
-			// 下流 (CIM / PS) はそれぞれ独自の既定値を持っており、
-			// ここで解決値に差し替えると挙動が変わる。
+			//
+			// 下流の扱いは経路で違う。CIM 経路は 0 を 5 分の既定に倒すが、
+			// **PS 経路は既定を持たず、0 だと即 timeout 例外になる**
+			// (`Wait-IsInFinalTransitionState` が while を飛ばして throw する)。
+			// ここで解決値に差し替えると旧挙動から変わるので、生値のまま渡す。
 			if err := client.UpdateVmStatus(ctx, name, timeoutSeconds, pollPeriodSeconds,
 				api.VmState_Off, false); err != nil {
 				return err
 			}
+			issued = true
 		}
 
 		log.Printf("[INFO][hyperv][waitForVmOff] vm %q is in a state of %s (%d) and so wait %v for it to turn off",
@@ -1830,6 +1858,12 @@ func waitForVmOff(
 // ここに無い非 Off 状態は**誰も Off にしない**ので、待っても抜けられない
 // (waitForVmOff が timeout でエラーにする)。集合を変えるなら waitForVmOff の
 // doc と PS 経路の挙動も確認すること。
+//
+// ⚠️ **`Other` が「要求できる」のは CIM 経路だけ。** CIM 経路の `UpdateVmStatus` は
+// 安定状態まで待ってから Off を要求する (安定先が Saved なら TurnOffVM に倒す) ので
+// 発行対象にする意味がある。一方 PS 経路は `Test-VmStateRequiresManualIntervention` に
+// `Other` が入っているため即 throw する。どちらもハングはしない (エラーになる) ので
+// 旧挙動どおりだが、「要求できる」が成り立つのは CIM 経路に限る。
 func canRequestVmOff(s api.VmState) bool {
 	switch s {
 	case api.VmState_Other, api.VmState_Running, api.VmState_Paused:

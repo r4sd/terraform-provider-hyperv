@@ -41,8 +41,13 @@ func enabledStateToVmState(s uint16) api.VmState {
 // Hyper-V が Invalid state で拒否するため、状態変更の前に安定するまで待つ判定に使う。
 //
 // 安定状態の集合はここ 1 箇所で定義する (enabledStateToVmState もこれを使う)。
-// 2 箇所に同じ case 列を書くと、片方だけ足した時に
-// 「Other に落ちるのに安定とみなす」状態が生まれる。
+// 2 箇所に同じ case 列を書くと、片方だけ足した時に 2 関数の見解が食い違う。
+//
+// ⚠️ **「Other に落ちる値を安定扱いできない」ことは保証していない。**
+// `api.VmState_Other` は 1 で、ここに 1 を足せば「安定かつ Other」が成立する
+// (CIM の EnabledState 表にも 1 = Other がある)。委譲が保証するのは
+// 2 関数のメンバーシップが一致することまで。安定集合の中身そのものは
+// vm_status_test.go の TestIsStableEnabledState_WholeEnum が固定する。
 func isStableEnabledState(s uint16) bool {
 	switch s {
 	case hyperv.EnabledStateEnabled, hyperv.EnabledStateDisabled,

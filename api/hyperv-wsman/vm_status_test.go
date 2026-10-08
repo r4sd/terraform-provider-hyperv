@@ -76,3 +76,38 @@ func TestVmStatusWaitOpts(t *testing.T) {
 		t.Errorf("timeout のみなら 1 opt, got %d", len(got))
 	}
 }
+
+// TestIsStableEnabledState_WholeEnum は api.VmState の列挙**全体**を回して、
+// 安定なのは Running / Off / Paused / Saved の 4 つだけであることを固定する。
+//
+// 🔴 **サンプルの不安定リストでは穴が残る。** Fable のレビューで、
+// 安定集合に 1 (Other) / 32779 (FastSaved) / 32783 を足す変異が
+// どれも生き残ることが分かった (どの値も TestIsStableEnabledState の
+// リストに入っていなかった)。
+//
+// ここは列挙を回すので、**列挙に値が増えても自動で追随する**。
+// provider #175 (32783 以降が実機とずれている) を直す時にこの関数へ手が入っても、
+// Critical 域を安定に足した瞬間に落ちる。
+func TestIsStableEnabledState_WholeEnum(t *testing.T) {
+	stable := map[api.VmState]bool{
+		api.VmState_Running: true,
+		api.VmState_Off:     true,
+		api.VmState_Paused:  true,
+		api.VmState_Saved:   true,
+	}
+	if len(api.VmState_name) < 20 {
+		t.Fatalf("api.VmState_name の要素が %d 件しかない。列挙を回す検査が空振りしている",
+			len(api.VmState_name))
+	}
+	for v, name := range api.VmState_name {
+		got := isStableEnabledState(uint16(v))
+		if want := stable[v]; got != want {
+			t.Errorf("isStableEnabledState(%d /* %s */) = %v, want %v", v, name, got, want)
+		}
+		// 安定と判定した値は enabledStateToVmState が Other に潰さないこと
+		// (2 関数の見解が食い違っていないか)。
+		if got && enabledStateToVmState(uint16(v)) == api.VmState_Other {
+			t.Errorf("%d /* %s */ を安定と判定したのに Other に落ちている", v, name)
+		}
+	}
+}

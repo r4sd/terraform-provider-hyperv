@@ -1681,51 +1681,142 @@ func resourceHyperVMachineInstanceDelete(ctx context.Context, d *schema.Resource
 	return nil
 }
 
-func turnOffVmIfOn(ctx context.Context, data *schema.ResourceData, client api.Client, name string) (err error) {
-	vmState, err := client.GetVmStatus(ctx, name)
+// turnOffVmIfOn は VM が Off でなければ Off にして待つ。
+//
+// 待機の中身は waitForVmOff に分けてある。`api.Client` は多数のインターフェースの
+// 合成なので、そのままだとテスト用のスタブを作れない。
+func turnOffVmIfOn(ctx context.Context, data *schema.ResourceData, client api.Client, name string) error {
+	timeout, pollPeriod, err := api.ExpandVmStateWaitForState(data)
 	if err != nil {
 		return err
 	}
+	return waitForVmOff(ctx, client, name, timeout, pollPeriod)
+}
 
-	for vmState.State != api.VmState_Off {
-		if vmState.State == api.VmState_Other ||
-			vmState.State == api.VmState_Running ||
-			vmState.State == api.VmState_Paused {
-			waitForStateTimeout, waitForStatePollPeriod, err := api.ExpandVmStateWaitForState(data)
-			if err != nil {
-				return err
-			}
+// 待機の既定値。**0 が渡っても上限が効くようにする** (#180)。
+//
+// schema の既定は timeout=120 / poll=2 だが、0 が渡る経路を想定していないと
+// 無限ループに戻る。
+const (
+	defaultTurnOffTimeout    = 120 * time.Second
+	defaultTurnOffPollPeriod = 2 * time.Second
+)
 
-			err = client.UpdateVmStatus(ctx, name, waitForStateTimeout, waitForStatePollPeriod, api.VmState_Off, false)
-			if err != nil {
-				return err
-			}
-		}
+// resolveTurnOffWait は秒指定を Duration に直し、**0 以下を既定値に倒す**。
+//
+// 🔴 0 を素通りさせると timeout が 0 になり、deadline が「今」になるので
+// 1 回目のポーリングで必ずタイムアウトする (= 待たない)。pollPeriod が 0 なら busy loop。
+// schema の既定は timeout=120 / poll=2 だが、**0 が渡る経路を想定していないと壊れる**。
+//
+// 分けてあるのは、既定値へのフォールバックを 120 秒待たずにテストできるようにするため。
+func resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds uint32) (timeout, pollPeriod time.Duration) {
+	timeout = time.Duration(timeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = defaultTurnOffTimeout
+	}
+	pollPeriod = time.Duration(pollPeriodSeconds) * time.Second
+	if pollPeriod <= 0 {
+		pollPeriod = defaultTurnOffPollPeriod
+	}
+	return timeout, pollPeriod
+}
 
-		if vmState.State == api.VmState_RunningCritical ||
-			vmState.State == api.VmState_OffCritical ||
-			vmState.State == api.VmState_StoppingCritical ||
-			vmState.State == api.VmState_SavedCritical ||
-			vmState.State == api.VmState_PausedCritical ||
-			vmState.State == api.VmState_StartingCritical ||
-			vmState.State == api.VmState_ResetCritical ||
-			vmState.State == api.VmState_SavingCritical ||
-			vmState.State == api.VmState_PausingCritical ||
-			vmState.State == api.VmState_ResumingCritical ||
-			vmState.State == api.VmState_FastSavedCritical ||
-			vmState.State == api.VmState_FastSavingCritical {
-			return fmt.Errorf("[ERROR][hyperv][turnOffVmIfOn] vm %#v is in a state of %#v and this must be manually recovered from", name, vmState.State)
-		}
-
-		log.Printf("[INFO][hyperv][turnOffVmIfOn] vm %#v is in a state of %#v and so wait 2 seconds for it turn off", name, vmState.State)
-		time.Sleep(2 * time.Second)
-
-		vmState, err = client.GetVmStatus(ctx, name)
+// waitForVmOff は VM が Off になるまで待つ。
+//
+// # 🔴 timeout を必ず効かせる (#180)
+//
+// 以前は上限が無く、**停止を発行しない状態では永久に抜けなかった。**
+// 停止を発行するのは Other / Running / Paused だけで、それ以外の非 Off 状態
+// (`Saved` / `FastSaved` / `Hibernated` / `ComponentServicing` 等) では
+// 2 秒待って再ポーリングするだけ。誰も Off にしないので抜けない。
+//
+// **`Saved` は普通に起きる。** `Save-VM` した VM に対して Off を要求する変更を
+// apply すると、terraform が応答を返さなくなっていた。
+//
+// # 停止を発行する状態の集合は変えていない
+//
+// `Saved` / `FastSaved` は `Stop-VM -Force` 相当で Off にできるので発行対象に
+// 入れるのが筋に見えるが、**挙動変更になるので本修正の範囲外**とした
+// (無限ハングが timeout エラーになるだけでも大きく改善する)。集合の見直しは #180 で追跡。
+//
+// # ctx を見る
+//
+// 以前は time.Sleep が ctx を見ていなかったので terraform 側のキャンセルが効かなかった。
+func waitForVmOff(
+	ctx context.Context,
+	client api.HypervVmStatusClient,
+	name string,
+	timeoutSeconds uint32,
+	pollPeriodSeconds uint32,
+) error {
+	timeout, pollPeriod := resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds)
+	deadline := time.Now().Add(timeout)
+	for {
+		vmState, err := client.GetVmStatus(ctx, name)
 		if err != nil {
 			return err
 		}
+		if vmState.State == api.VmState_Off {
+			return nil
+		}
+
+		if isCriticalVmState(vmState.State) {
+			// %#v は String() を呼ばないので数値しか出ない。名前も出す。
+			return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q is in a state of %s (%d) "+
+				"and this must be manually recovered from",
+				name, vmState.State, int(vmState.State))
+		}
+
+		if vmState.State == api.VmState_Other ||
+			vmState.State == api.VmState_Running ||
+			vmState.State == api.VmState_Paused {
+			if err := client.UpdateVmStatus(ctx, name, timeoutSeconds, pollPeriodSeconds,
+				api.VmState_Off, false); err != nil {
+				return err
+			}
+		}
+
+		if remaining := time.Until(deadline); remaining <= 0 {
+			return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q did not turn off within %v "+
+				"(last observed state: %s (%d))。この状態では停止要求が発行されないため、"+
+				"手動で停止するか wait_for_state_timeout を延ばすこと",
+				name, timeout, vmState.State, int(vmState.State))
+		}
+
+		log.Printf("[INFO][hyperv][waitForVmOff] vm %q is in a state of %s (%d) and so wait %v for it to turn off",
+			name, vmState.State, int(vmState.State), pollPeriod)
+		timer := time.NewTimer(pollPeriod)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return nil
+}
+
+// isCriticalVmState は「待っても回復しないので人が介入する必要がある」状態かを返す。
+//
+// 値は api.VmState の Critical 系。#175 で 32783 以降のずれを直したので、
+// 定数で書いておけば値の変更に追随する。
+func isCriticalVmState(s api.VmState) bool {
+	switch s {
+	case api.VmState_RunningCritical,
+		api.VmState_OffCritical,
+		api.VmState_StoppingCritical,
+		api.VmState_SavedCritical,
+		api.VmState_PausedCritical,
+		api.VmState_StartingCritical,
+		api.VmState_ResetCritical,
+		api.VmState_SavingCritical,
+		api.VmState_PausingCritical,
+		api.VmState_ResumingCritical,
+		api.VmState_FastSavedCritical,
+		api.VmState_FastSavingCritical:
+		return true
+	default:
+		return false
+	}
 }
 
 func resourceHyperVMachineInstanceCustomizeDiff(ctx context.Context, d *schema.ResourceDiff, meta interface{}) error {

@@ -1,0 +1,69 @@
+# Microsoft.HyperV.PowerShell.VMState の列挙を実機から採取したもの。
+#
+# 形式: <値> <名前>
+#
+# 取得元: 実機の PowerShell (Hyper-V モジュールの型そのもの)
+#
+#   Import-Module Hyper-V
+#   $t = [Microsoft.HyperV.PowerShell.VMState]
+#   foreach ($n in [Enum]::GetNames($t)) { "{0} {1}" -f [int][Enum]::Parse($t, $n), $n }
+#
+# 取得日: 2026-10-08
+# ホスト OS ビルド: 10.0.26220 (Insider Canary 系。Server 2025 GA は 26100)
+#
+# ⚠️ Hyper-V モジュールのバージョンは**どの Windows でも 2.0.0.0** なので
+#   版の識別子として機能しない。実質のキーは OS ビルド。
+#
+# ## 第二ソース (独立に確認済み)
+#
+# Microsoft 公式の Go WMI ライブラリ microsoft/wmi の
+#   pkg/virtualization/core/virtualsystem/virtualmachine.go
+# が同じ値を定義している。**1〜32796 の値はこの表と完全一致**した。
+#
+#   Hibernated=32783 / ComponentServicing=32784 / RunningCritical=32785 / ...
+#   FastSavingCritical=32796
+#
+# 名前は 2 箇所だけ違う (向こう側の typo と思われる):
+#   32787 StoppingCritial (sic) / 32795 FastSaveCritical
+# この表は PowerShell の列挙の名前に従う (provider が String() で返す値なので)。
+#
+# また microsoft/wmi は Unknown=0 を持つが、**PowerShell の VMState は 0 を公開しない**
+# ため この表にも無い。api.VmState も 0 を持たない (ゼロ値 = 未設定として扱う)。
+#
+# ⚠️ api.VmState は upstream (taliesins) が手で起こしたもので、
+#   32783 以降が 2 つずれていた (Hibernated / ComponentServicing が抜けていた)。
+#   それが #175。この fixture は **コードとは独立した出どころ**なので、
+#   突合すること自体が実証拠になる。
+#
+# 📌 Windows のバージョンによって列挙が増える可能性がある。増えた場合は
+#   採り直してこのファイルを更新し、api.VmState 側にも足す
+#   (TestVmStateMatchesHostEnum が「fixture にあってコードに無い」で落ちる)。
+1 Other
+2 Running
+3 Off
+4 Stopping
+6 Saved
+9 Paused
+10 Starting
+11 Reset
+32773 Saving
+32776 Pausing
+32777 Resuming
+32779 FastSaved
+32780 FastSaving
+32781 ForceShutdown
+32782 ForceReboot
+32783 Hibernated
+32784 ComponentServicing
+32785 RunningCritical
+32786 OffCritical
+32787 StoppingCritical
+32788 SavedCritical
+32789 PausedCritical
+32790 StartingCritical
+32791 ResetCritical
+32792 SavingCritical
+32793 PausingCritical
+32794 ResumingCritical
+32795 FastSavedCritical
+32796 FastSavingCritical

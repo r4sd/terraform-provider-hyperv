@@ -19,8 +19,9 @@ func TestClientConfig_ImplementsHypervVmStatusClient(t *testing.T) {
 }
 
 // TestEnabledStateToVmState は Msvm_ComputerSystem.EnabledState → provider VmState の変換を検証する。
-// 値は実機ダンプ準拠 (Running=2 / Off=3 / Saved=6 / Paused=9)。go-wsman の CIM 標準定数
-// (Paused=32768/Saved=32769) は Msvm_ComputerSystem では返らないので Other に落ちる。
+// 値は実機ダンプ準拠 (Running=2 / Off=3 / Saved=6 / Paused=9)。
+// 32768/32769 は Hyper-V v1 由来の値で Msvm_ComputerSystem では返らないので Other に落ちる
+// (go-wsman が #102 でこれを定数に入れていた時期があり、#169 で 9 / 6 に直った)。
 func TestEnabledStateToVmState(t *testing.T) {
 	tests := []struct {
 		name string
@@ -32,7 +33,7 @@ func TestEnabledStateToVmState(t *testing.T) {
 		{"9→Paused(実機値)", 9, api.VmState_Paused},
 		{"6→Saved(実機値)", 6, api.VmState_Saved},
 		{"0(Unknown)→Other", 0, api.VmState_Other},
-		{"32768(CIM Paused, 実機では来ない)→Other", 32768, api.VmState_Other},
+		{"32768(v1 由来, 実機では来ない)→Other", 32768, api.VmState_Other},
 		{"4(Stopping遷移中)→Other", 4, api.VmState_Other},
 		{"未知値→Other", 12345, api.VmState_Other},
 	}
@@ -55,7 +56,7 @@ func TestIsStableEnabledState(t *testing.T) {
 		}
 	}
 	// 遷移中 (Stopping=4 / Starting=10 / Reset=11 / Saving=32773 / Pausing=32776 / Resuming=32777) と
-	// Unknown(0)、実機では来ない CIM 値(32768/32769) は不安定扱い。
+	// Unknown(0)、実機では来ない v1 由来の値(32768/32769) は不安定扱い。
 	for _, s := range []uint16{0, 4, 10, 11, 32768, 32769, 32773, 32776, 32777} {
 		if isStableEnabledState(s) {
 			t.Errorf("EnabledState=%d は遷移中/未知(不安定)のはず", s)

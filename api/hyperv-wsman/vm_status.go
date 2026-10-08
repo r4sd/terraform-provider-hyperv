@@ -19,27 +19,34 @@ const (
 //
 // 実機ダンプ (2026-07-09) で確認したとおり、Hyper-V の Msvm_ComputerSystem.EnabledState は
 // **PowerShell の VMState 列挙値をそのまま返す** (Running=2 / Off=3 / Saved=6 / Paused=9)。
-// go-wsman の EnabledStatePaused(32768)/EnabledStateSaved(32769) は CIM 標準値で、実機の
-// Msvm_ComputerSystem とは食い違う (go-wsman 側の定数バグ = go-wsman#102。修正後は定数に戻す)。このため本関数は
-// go-wsman の Paused/Saved 定数を使わず、実測した VMState 値で直接マップする。
+// 判定は go-wsman の定数で書く。かつては生の VMState 値を直接並べていたが、
+// それは go-wsman 側が CIM ドキュメントの 32768/32769 を入れていて実機と食い違っていた
+// 時期の回避策 (go-wsman #102)。go-wsman #169 で 9 / 6 に直ったので回避策は不要になった。
+//
+// api.VmState(s) のキャストは、**独立に導かれた 2 つの列挙が一致している**ことに依存する
+// (upstream は PowerShell の VMState 列挙から、go-wsman は Msvm_ComputerSystem の実機観測から)。
+// 一致が崩れると黙って違う状態に化けるので、enabled_state_parity_test.go で固定している。
+//
 // 遷移値 (Stopping=4/Starting=10/Saving=32773 等) や未知は Other。UpdateVmStatus は事前に安定状態
 // まで待つので、状態変更の判断が遷移値に依存することはない (GetVmStatus の読み取りが遷移中に当たった時のみ Other)。
 func enabledStateToVmState(s uint16) api.VmState {
-	switch api.VmState(s) {
-	case api.VmState_Running, api.VmState_Off, api.VmState_Paused, api.VmState_Saved:
+	if isStableEnabledState(s) {
 		return api.VmState(s)
-	default:
-		return api.VmState_Other
 	}
+	return api.VmState_Other
 }
 
 // isStableEnabledState は EnabledState が遷移中でない安定状態 (Running/Off/Paused/Saved) かを返す。
 // 遷移中 (Starting/Stopping/Saving/Pausing/Resuming 等) の VM に RequestStateChange を撃つと
 // Hyper-V が Invalid state で拒否するため、状態変更の前に安定するまで待つ判定に使う。
-// 値は実機ダンプ準拠 (enabledStateToVmState と同じく Msvm_ComputerSystem は VMState 値を返す)。
+//
+// 安定状態の集合はここ 1 箇所で定義する (enabledStateToVmState もこれを使う)。
+// 2 箇所に同じ case 列を書くと、片方だけ足した時に
+// 「Other に落ちるのに安定とみなす」状態が生まれる。
 func isStableEnabledState(s uint16) bool {
-	switch api.VmState(s) {
-	case api.VmState_Running, api.VmState_Off, api.VmState_Paused, api.VmState_Saved:
+	switch s {
+	case hyperv.EnabledStateEnabled, hyperv.EnabledStateDisabled,
+		hyperv.EnabledStatePaused, hyperv.EnabledStateSaved:
 		return true
 	default:
 		return false

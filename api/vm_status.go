@@ -13,33 +13,40 @@ import (
 type VmState int
 
 const (
-	VmState_Other              VmState = 1
-	VmState_Running            VmState = 2
-	VmState_Off                VmState = 3
-	VmState_Stopping           VmState = 4
-	VmState_Saved              VmState = 6
-	VmState_Paused             VmState = 9
-	VmState_Starting           VmState = 10
-	VmState_Reset              VmState = 11
-	VmState_Saving             VmState = 32773
-	VmState_Pausing            VmState = 32776
-	VmState_Resuming           VmState = 32777
-	VmState_FastSaved          VmState = 32779
-	VmState_FastSaving         VmState = 32780
-	VmState_ForceShutdown      VmState = 32781
-	VmState_ForceReboot        VmState = 32782
-	VmState_RunningCritical    VmState = 32783
-	VmState_OffCritical        VmState = 32784
-	VmState_StoppingCritical   VmState = 32785
-	VmState_SavedCritical      VmState = 32786
-	VmState_PausedCritical     VmState = 32787
-	VmState_StartingCritical   VmState = 32788
-	VmState_ResetCritical      VmState = 32789
-	VmState_SavingCritical     VmState = 32790
-	VmState_PausingCritical    VmState = 32791
-	VmState_ResumingCritical   VmState = 32792
-	VmState_FastSavedCritical  VmState = 32793
-	VmState_FastSavingCritical VmState = 32794
+	VmState_Other         VmState = 1
+	VmState_Running       VmState = 2
+	VmState_Off           VmState = 3
+	VmState_Stopping      VmState = 4
+	VmState_Saved         VmState = 6
+	VmState_Paused        VmState = 9
+	VmState_Starting      VmState = 10
+	VmState_Reset         VmState = 11
+	VmState_Saving        VmState = 32773
+	VmState_Pausing       VmState = 32776
+	VmState_Resuming      VmState = 32777
+	VmState_FastSaved     VmState = 32779
+	VmState_FastSaving    VmState = 32780
+	VmState_ForceShutdown VmState = 32781
+	VmState_ForceReboot   VmState = 32782
+	// 🔴 **ここから下は 2026-10-08 まで 2 つずれていた** (#175)。
+	// Hibernated / ComponentServicing が抜けており、それ以降の名前が全部
+	// 1 つずつ繰り上がっていた (32783 を RunningCritical と呼んでいた等)。
+	// 値は実機の Microsoft.HyperV.PowerShell.VMState から採取した
+	// (api/testdata/vmstate_enum.txt。TestVmStateMatchesHostEnum が突合する)。
+	VmState_Hibernated         VmState = 32783
+	VmState_ComponentServicing VmState = 32784
+	VmState_RunningCritical    VmState = 32785
+	VmState_OffCritical        VmState = 32786
+	VmState_StoppingCritical   VmState = 32787
+	VmState_SavedCritical      VmState = 32788
+	VmState_PausedCritical     VmState = 32789
+	VmState_StartingCritical   VmState = 32790
+	VmState_ResetCritical      VmState = 32791
+	VmState_SavingCritical     VmState = 32792
+	VmState_PausingCritical    VmState = 32793
+	VmState_ResumingCritical   VmState = 32794
+	VmState_FastSavedCritical  VmState = 32795
+	VmState_FastSavingCritical VmState = 32796
 )
 
 var VmState_name = map[VmState]string{
@@ -58,6 +65,8 @@ var VmState_name = map[VmState]string{
 	VmState_FastSaving:         "FastSaving",
 	VmState_ForceShutdown:      "ForceShutdown",
 	VmState_ForceReboot:        "ForceReboot",
+	VmState_Hibernated:         "Hibernated",
+	VmState_ComponentServicing: "ComponentServicing",
 	VmState_RunningCritical:    "RunningCritical",
 	VmState_OffCritical:        "OffCritical",
 	VmState_StoppingCritical:   "StoppingCritical",
@@ -93,6 +102,8 @@ var VmState_value = map[string]VmState{
 	"fastsaving":         VmState_FastSaving,
 	"forceshutdown":      VmState_ForceShutdown,
 	"forcereboot":        VmState_ForceReboot,
+	"hibernated":         VmState_Hibernated,
+	"componentservicing": VmState_ComponentServicing,
 	"runningcritical":    VmState_RunningCritical,
 	"offcritical":        VmState_OffCritical,
 	"stoppingcritical":   VmState_StoppingCritical,

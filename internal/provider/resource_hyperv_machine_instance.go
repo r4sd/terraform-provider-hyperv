@@ -1702,7 +1702,7 @@ const (
 	defaultTurnOffPollPeriod = 2 * time.Second
 )
 
-// resolveTurnOffWait は秒指定を Duration に直し、**0 以下を既定値に倒す**。
+// resolveTurnOffWait は秒指定を Duration に直し、**0 を既定値に倒す**。
 //
 // 🔴 0 を素通りさせると timeout が 0 になり、deadline が「今」になるので
 // 1 回目のポーリングで必ずタイムアウトする (= 待たない)。pollPeriod が 0 なら busy loop。
@@ -1710,12 +1710,13 @@ const (
 //
 // 分けてあるのは、既定値へのフォールバックを 120 秒待たずにテストできるようにするため。
 func resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds uint32) (timeout, pollPeriod time.Duration) {
+	// 引数は uint32 なので負は無い。`<= 0` と書くと「負もある」と読めるので == 0。
 	timeout = time.Duration(timeoutSeconds) * time.Second
-	if timeout <= 0 {
+	if timeout == 0 {
 		timeout = defaultTurnOffTimeout
 	}
 	pollPeriod = time.Duration(pollPeriodSeconds) * time.Second
-	if pollPeriod <= 0 {
+	if pollPeriod == 0 {
 		pollPeriod = defaultTurnOffPollPeriod
 	}
 	return timeout, pollPeriod
@@ -1726,18 +1727,37 @@ func resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds uint32) (timeout, poll
 // # 🔴 timeout を必ず効かせる (#180)
 //
 // 以前は上限が無く、**停止を発行しない状態では永久に抜けなかった。**
-// 停止を発行するのは Other / Running / Paused だけで、それ以外の非 Off 状態
-// (`Saved` / `FastSaved` / `Hibernated` / `ComponentServicing` 等) では
-// 2 秒待って再ポーリングするだけ。誰も Off にしないので抜けない。
+// 停止を発行するのは Other / Running / Paused だけで、それ以外の非 Off 状態では
+// 待って再ポーリングするだけ。誰も Off にしないので抜けない。
 //
-// **`Saved` は普通に起きる。** `Save-VM` した VM に対して Off を要求する変更を
-// apply すると、terraform が応答を返さなくなっていた。
+// ⚠️ **どの状態でハングするかは経路で違う。**
+//
+//	PS 経路 (既定)   GetVmStatus が Get-VM の State をそのまま返すので、
+//	                 Saved / FastSaved / Hibernated / ComponentServicing の
+//	                 いずれでもハングした
+//	CIM 経路         enabledStateToVmState が 2/3/6/9 以外を Other に潰すので、
+//	                 Other は停止発行の対象。実際にハングするのは Saved (6) だけ
+//
+// **`Saved` は普通に起きる。** `Save-VM` した VM に対して `notes` 等の変更を apply すると
+// `hasChangesThatRequireVmToBeOff` から呼ばれてここに入る。
+//
+// # deadline は「取り直した直後の状態」で判定する
+//
+// 🔴 停止の発行 (`UpdateVmStatus`) は**同期で長くかかる**。CIM 経路は
+// `waitForStableVmState` + `WaitForJob` で正常系でも最大 2×timeout、PS 経路は
+// ゲスト OS のシャットダウン待ちでブロックする。
+//
+// 発行の**前**に読んだ状態で deadline を判定すると、「発行が長引いたが成功して
+// VM は Off になった」ケースで古い状態を見て timeout エラーにしてしまう
+// (旧実装は発行後に再取得していたので成功していた)。
+// そのため **deadline の判定は発行の前**に置き、必ず取り直した状態で判定する。
 //
 // # 停止を発行する状態の集合は変えていない
 //
-// `Saved` / `FastSaved` は `Stop-VM -Force` 相当で Off にできるので発行対象に
-// 入れるのが筋に見えるが、**挙動変更になるので本修正の範囲外**とした
-// (無限ハングが timeout エラーになるだけでも大きく改善する)。集合の見直しは #180 で追跡。
+// `Saved` / `FastSaved` を発行対象に入れるのが筋に見えるが、**挙動変更になるので
+// 本修正の範囲外**とした。なお **PS 経路の `Set-VMState` は Saved→Off を throw する**
+// (TurnOffVM にフォールバックするのは CIM 側だけ) ので、集合を広げるなら
+// PS 側の対応も要る。#180 で追跡。
 //
 // # ctx を見る
 //
@@ -1751,6 +1771,7 @@ func waitForVmOff(
 ) error {
 	timeout, pollPeriod := resolveTurnOffWait(timeoutSeconds, pollPeriodSeconds)
 	deadline := time.Now().Add(timeout)
+
 	for {
 		vmState, err := client.GetVmStatus(ctx, name)
 		if err != nil {
@@ -1759,28 +1780,37 @@ func waitForVmOff(
 		if vmState.State == api.VmState_Off {
 			return nil
 		}
-
 		if isCriticalVmState(vmState.State) {
-			// %#v は String() を呼ばないので数値しか出ない。名前も出す。
 			return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q is in a state of %s (%d) "+
 				"and this must be manually recovered from",
 				name, vmState.State, int(vmState.State))
 		}
 
-		if vmState.State == api.VmState_Other ||
-			vmState.State == api.VmState_Running ||
-			vmState.State == api.VmState_Paused {
+		stoppable := canRequestVmOff(vmState.State)
+
+		// 🔴 **発行の前に判定する。** 発行は同期で長くかかるので、発行後に
+		// 古い状態で判定すると「長引いたが成功した」ケースを誤って失敗にする。
+		if time.Now().After(deadline) {
+			if stoppable {
+				return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q did not turn off within %v "+
+					"(last observed state: %s (%d))。停止要求は発行したが Off にならなかった。"+
+					"wait_for_state_timeout を延ばすか、ゲスト OS 側の停止を確認すること",
+					name, timeout, vmState.State, int(vmState.State))
+			}
+			return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q did not turn off within %v "+
+				"(last observed state: %s (%d))。**この状態では停止要求が発行されない**ため、"+
+				"待っても Off にならない。手動で停止すること (timeout を延ばしても変わらない)",
+				name, timeout, vmState.State, int(vmState.State))
+		}
+
+		if stoppable {
+			// timeoutSeconds / pollPeriodSeconds は**解決前の生値**を渡す。
+			// 下流 (CIM / PS) はそれぞれ独自の既定値を持っており、
+			// ここで解決値に差し替えると挙動が変わる。
 			if err := client.UpdateVmStatus(ctx, name, timeoutSeconds, pollPeriodSeconds,
 				api.VmState_Off, false); err != nil {
 				return err
 			}
-		}
-
-		if remaining := time.Until(deadline); remaining <= 0 {
-			return fmt.Errorf("[ERROR][hyperv][waitForVmOff] vm %q did not turn off within %v "+
-				"(last observed state: %s (%d))。この状態では停止要求が発行されないため、"+
-				"手動で停止するか wait_for_state_timeout を延ばすこと",
-				name, timeout, vmState.State, int(vmState.State))
 		}
 
 		log.Printf("[INFO][hyperv][waitForVmOff] vm %q is in a state of %s (%d) and so wait %v for it to turn off",
@@ -1792,6 +1822,20 @@ func waitForVmOff(
 			return ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+// canRequestVmOff は「この状態なら Off を要求できる」かを返す。
+//
+// ここに無い非 Off 状態は**誰も Off にしない**ので、待っても抜けられない
+// (waitForVmOff が timeout でエラーにする)。集合を変えるなら waitForVmOff の
+// doc と PS 経路の挙動も確認すること。
+func canRequestVmOff(s api.VmState) bool {
+	switch s {
+	case api.VmState_Other, api.VmState_Running, api.VmState_Paused:
+		return true
+	default:
+		return false
 	}
 }
 

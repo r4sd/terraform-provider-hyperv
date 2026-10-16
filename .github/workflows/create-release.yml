@@ -24,10 +24,10 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.CREATE_TAG_GITHUB_TOKEN }}
-      - uses: Bpazy/setup-git-chglog@v1
+      - uses: Bpazy/setup-git-chglog@51bb488b4d96f4db1c1c611d133a30c28f479f33 # v1
         with:
           git-chglog-version: ${{ env.GIT_CHGLOG_VERSION}}
-      - uses: obfu5c8/action-svu@v1
+      - uses: obfu5c8/action-svu@e0ac511a90318bc284bf845936acd5c5c077d788 # v1.0.0
         id: install_svu
         with:
           type: none
@@ -50,7 +50,7 @@ jobs:
         run: |
           git-chglog --next-tag "v${{ steps.get_version.outputs.RELEASE_VERSION }}" > CHANGELOG.md
       - name: Add updated changelog and create tag
-        uses: EndBug/add-and-commit@v9
+        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
         with:
           default_author: github_actions
           message: "chore(release): v${{ steps.get_version.outputs.RELEASE_VERSION }}"

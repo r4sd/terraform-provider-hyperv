@@ -5,6 +5,15 @@ updates:
     schedule:
       interval: "daily"
       time: "08:00"
+    # リリース直後は、侵害が起きていてもまだ発覚していない時間帯。
+    # このリポジトリは patch/minor を CI 通過後に自動マージする (必要な承認は 0 件) ため、
+    # cooldown が無いと公開当日の版が人の介在 0 回で main に入る。
+    # cooldown を置くと、公開から下記日数が経つまで PR が作られない。
+    # cooldown は version updates にのみ適用され、security updates には適用されない
+    # (本リポジトリは Dependabot security updates 有効) ので脆弱性修正は遅れない。
+    cooldown:
+      default-days: 5
+      semver-patch-days: 3
     labels:
       - "dependencies"
       - "automerge"
@@ -16,6 +25,11 @@ updates:
     schedule:
       interval: "daily"
       time: "08:00"
+    # github-actions は `default-days` のみ対応で、semver-*-days は非対応。
+    # スキーマ上は valid なため書いても警告は出ず黙って無視されるので書かない。
+    # よって major も含めて一律の日数になる。gomod より長めに取る。
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "automerge"

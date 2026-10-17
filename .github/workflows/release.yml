@@ -37,8 +37,8 @@ jobs:
     name: go mod download
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/cache@v5
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-go-pkg-mod
       timeout-minutes: 3
@@ -51,7 +51,7 @@ jobs:
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-pkg-mod
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: .go-version
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -63,8 +63,8 @@ jobs:
     needs: [go_mod_download]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/cache@v5
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-go-pkg-mod
       timeout-minutes: 3
@@ -76,7 +76,7 @@ jobs:
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-pkg-mod
-    - uses: actions/cache@v5
+    - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-go-build
       timeout-minutes: 3
@@ -90,7 +90,7 @@ jobs:
           ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-build
     - name: Cache cache-terraform-plugin-dir
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-terraform-plugin-dir
       timeout-minutes: 2
@@ -100,7 +100,7 @@ jobs:
         key: ${{ runner.os }}-terraform-plugin-dir-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}-${{ hashFiles('internal/**', 'api/**', 'powershell/**') }}
 
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure' || steps.cache-go-build.outputs.cache-hit != 'true' || steps.cache-go-build.outcome == 'failure' || steps.cache-terraform-plugin-dir.outputs.cache-hit != 'true' || steps.cache-terraform-plugin-dir.outcome == 'failure'
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: .go-version
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -115,9 +115,9 @@ jobs:
     needs: [go_build]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
     - name: Cache cache-terraform-providers-schema
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-terraform-providers-schema
       timeout-minutes: 2
@@ -126,7 +126,7 @@ jobs:
           terraform-providers-schema
         key: ${{ runner.os }}-terraform-providers-schema-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}-${{ hashFiles('internal/**', 'api/**', 'powershell/**') }}
     - name: Cache cache-terraform-plugin-dir
-      uses: actions/cache@v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-terraform-plugin-dir
       timeout-minutes: 2
@@ -140,7 +140,7 @@ jobs:
           ${{ runner.os }}-terraform-plugin-dir-
   
     - if: steps.cache-terraform-providers-schema.outputs.cache-hit != 'true' || steps.cache-terraform-providers-schema.outcome == 'failure'
-      uses: hashicorp/setup-terraform@v4
+      uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
         terraform_wrapper: false
@@ -161,8 +161,8 @@ jobs:
     needs: [go_build]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-    - uses: actions/cache@v5
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+    - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-go-pkg-mod
       timeout-minutes: 3
@@ -174,7 +174,7 @@ jobs:
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
           ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-pkg-mod
-    - uses: actions/cache@v5
+    - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       continue-on-error: true
       id: cache-go-build
       timeout-minutes: 3
@@ -187,13 +187,13 @@ jobs:
           ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
           ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
           ${{ runner.os }}-go-build
-    - uses: actions/setup-go@v6
+    - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: .go-version
     - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
       name: go mod download
       run: go mod download
-    - uses: hashicorp/setup-terraform@v4
+    - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
       with:
         terraform_version: ${{ env.TERRAFORM_VERSION }}
         terraform_wrapper: false
@@ -218,8 +218,8 @@ jobs:
     needs: [go_build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/cache@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         id: cache-go-pkg-mod
         timeout-minutes: 3
@@ -231,7 +231,7 @@ jobs:
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-pkg-mod
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         id: cache-go-build
         timeout-minutes: 3
@@ -244,7 +244,7 @@ jobs:
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-build
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: .go-version
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -257,8 +257,8 @@ jobs:
     needs: [go_build]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/cache@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         id: cache-go-pkg-mod
         timeout-minutes: 3
@@ -270,7 +270,7 @@ jobs:
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-pkg-mod
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         id: cache-go-build
         timeout-minutes: 3
@@ -283,7 +283,7 @@ jobs:
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-build
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: .go-version
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
@@ -307,7 +307,7 @@ jobs:
   #     image: returntocorp/semgrep
   #   if: (github.actor != 'dependabot[bot]')
   #   steps:
-  #     - uses: actions/checkout@v6
+  #     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
   #       with:
   #         fetch-depth: 0
   #     - run: semgrep scan --config auto --error
@@ -319,7 +319,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
           persist-credentials: true
@@ -327,7 +327,7 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.ref }}
           token: ${{ secrets.CREATE_TAG_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         id: cache-go-pkg-mod
         timeout-minutes: 3
@@ -339,7 +339,7 @@ jobs:
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-pkg-mod-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-pkg-mod
-      - uses: actions/cache@v5
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         continue-on-error: true
         id: cache-go-build
         timeout-minutes: 3
@@ -352,17 +352,17 @@ jobs:
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}-${{ hashFiles('**/go.sum') }}
             ${{ runner.os }}-go-build-${{ hashFiles('.github/workflows/release.yml') }}
             ${{ runner.os }}-go-build
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: .go-version
       - if: steps.cache-go-pkg-mod.outputs.cache-hit != 'true' || steps.cache-go-pkg-mod.outcome == 'failure'
         name: go mod download
         run: go mod download
 
-      - uses: Bpazy/setup-git-chglog@v1
+      - uses: Bpazy/setup-git-chglog@51bb488b4d96f4db1c1c611d133a30c28f479f33 # v1
         with:
           git-chglog-version: ${{ env.GIT_CHGLOG_VERSION}}
-      - uses: obfu5c8/action-svu@v1
+      - uses: obfu5c8/action-svu@e0ac511a90318bc284bf845936acd5c5c077d788 # v1.0.0
         id: install_svu
         with:
           type: none
@@ -386,19 +386,19 @@ jobs:
           echo "release version: ${release_version}"
       - name: goreleaser check
         continue-on-error: true
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           args: check
       - name: Import GPG key
         id: import_gpg
-        uses: crazy-max/ghaction-import-gpg@v7
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           #passphrase: ${{ secrets.PASSPHRASE }}  
 
       - name: goreleaser release
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           version: latest
@@ -414,7 +414,7 @@ jobs:
         run: |
           git-chglog --next-tag "v${{ steps.get_version.outputs.PRERELEASE_VERSION }}" > CHANGELOG.md
       - name: goreleaser snapshot
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         if: "!(startsWith(github.ref, 'refs/tags/v'))"
         with:
           args: release --clean --skip=sign --snapshot --timeout ${{ env.RELEASE_TIME_OUT }} --release-notes=CHANGELOG.md
@@ -438,14 +438,14 @@ jobs:
           ARTIFACT="${ARTIFACT}-$(date -u +'%Y-%m-%dT%H-%M')"
           echo "ARTIFACT=${ARTIFACT}" >> $GITHUB_OUTPUT
       - name: upload snapshot artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: "!(startsWith(github.ref, 'refs/tags/v'))"
         with:
           name: ${{steps.naming.outputs.ARTIFACT}}
           path: dist/*.zip
           
       - name: Add updated changelog
-        uses: EndBug/add-and-commit@v9
+        uses: EndBug/add-and-commit@a94899bca583c204427a224a7af87c02f9b325d5 # v9
         if: "startsWith(github.ref, 'refs/heads/main')"
         with:
           default_author: github_actions
